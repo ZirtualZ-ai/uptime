@@ -1,0 +1,5 @@
+*.o
+/uptime-console
+*.db
+*.db-shm
+*.db-wal

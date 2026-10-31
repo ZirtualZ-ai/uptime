@@ -1,0 +1,56 @@
+[global]
+subnet = 192.168.40.0/24
+scan_interval = 300
+monitor_interval = 60
+database = ./uptime.db
+scan_enabled = true
+
+[server b460m]
+address = 192.168.40.10
+user = marshal
+port = 22
+# wol_mac = aa:bb:cc:dd:ee:ff
+# broadcast = 192.168.40.255
+
+[service website]
+server = b460m
+type = https
+target = https://zirtualz.net/
+port = 443
+expected_status = 200
+interval = 60
+
+[service ollama]
+server = b460m
+type = tcp
+target = 192.168.40.10
+port = 11434
+interval = 30
+
+[service open-webui]
+server = b460m
+type = tcp
+target = 192.168.40.10
+port = 3000
+interval = 30
+
+[service ai-gateway]
+server = b460m
+type = tcp
+target = 192.168.40.10
+port = 7681
+interval = 30
+
+[service minecraft]
+server = b460m
+type = tcp
+target = 192.168.40.10
+port = 25565
+interval = 30
+
+[service ssh]
+server = b460m
+type = tcp
+target = 192.168.40.10
+port = 22
+interval = 30
