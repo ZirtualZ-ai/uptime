@@ -14,7 +14,7 @@ PREFIX ?= /usr/local
 SYSCONFDIR ?= /etc/uptime
 DESTDIR ?=
 
-.PHONY: all clean check install
+.PHONY: all clean check debug install
 
 all: $(TARGET)
 
@@ -29,6 +29,10 @@ src/%.o: src/%.c
 check: $(TARGET)
 	./$(TARGET) --version
 	./$(TARGET) --check-config uptime.conf.example
+
+debug:
+	$(MAKE) clean
+	$(MAKE) CFLAGS='-O0 -g3 -std=c11 -Wall -Wextra -Wpedantic -pthread' all
 
 install: $(TARGET)
 	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(SYSCONFDIR)

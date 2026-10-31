@@ -36,6 +36,16 @@ cp /etc/uptime/uptime.conf.example /etc/uptime/uptime.conf
 vi /etc/uptime/uptime.conf
 ```
 
+To rebuild with debug symbols on the Alpine machine and replace the installed executable:
+
+```sh
+make debug
+make install
+/usr/local/bin/uptime-console --version
+```
+
+The version should report `Uptime 0.1.1`. In GDB, set breakpoints on `main` and `worker_main` and verify the `state` pointer immediately before `pthread_create` matches the worker's `argument`.
+
 Start it from TTY1 or an SSH session:
 
 ```sh
