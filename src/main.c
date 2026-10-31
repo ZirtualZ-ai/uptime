@@ -4,6 +4,7 @@
 #include "worker.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -11,7 +12,7 @@
 
 int main(int argc, char **argv)
 {
-    AppState state;
+    AppState *state;
     pthread_t worker;
     char error[UPTIME_DETAIL];
     const char *config_path = NULL;
@@ -56,73 +57,83 @@ int main(int argc, char **argv)
         }
     }
 
-    memset(&state, 0, sizeof(state));
-    config_defaults(&state.config);
+    state = calloc(1, sizeof(*state));
+    if (state == NULL) {
+        fprintf(stderr, "cannot allocate application state\n");
+        return 1;
+    }
+    config_defaults(&state->config);
     if (config_path == NULL) {
         if (access("./uptime.conf", R_OK) == 0) config_path = "./uptime.conf";
         else if (access("/etc/uptime/uptime.conf", R_OK) == 0) config_path = "/etc/uptime/uptime.conf";
     }
     if (config_path != NULL) {
-        if (config_load(config_path, &state.config, error, sizeof(error)) != 0) {
+        if (config_load(config_path, &state->config, error, sizeof(error)) != 0) {
             fprintf(stderr, "%s\n", error);
+            free(state);
             return 1;
         }
-        snprintf(state.config_file, sizeof(state.config_file), "%s", config_path);
+        snprintf(state->config_file, sizeof(state->config_file), "%s", config_path);
     } else {
-        snprintf(state.snapshot.notice, sizeof(state.snapshot.notice), "No config loaded; local-only mode. Run with -c FILE to monitor configured hosts.");
+        snprintf(state->snapshot.notice, sizeof(state->snapshot.notice), "No config loaded; local-only mode. Run with -c FILE to monitor configured hosts.");
     }
     {
-        int thread_error = pthread_mutex_init(&state.mutex, NULL);
+        int thread_error = pthread_mutex_init(&state->mutex, NULL);
         if (thread_error != 0) {
             fprintf(stderr, "cannot initialize mutex: %s\n", strerror(thread_error));
+            free(state);
             return 1;
         }
-        thread_error = pthread_cond_init(&state.condition, NULL);
+        thread_error = pthread_cond_init(&state->condition, NULL);
         if (thread_error != 0) {
             fprintf(stderr, "cannot initialize condition variable: %s\n", strerror(thread_error));
-            pthread_mutex_destroy(&state.mutex);
+            pthread_mutex_destroy(&state->mutex);
+            free(state);
             return 1;
         }
     }
-    state.snapshot.server_count = state.config.server_count;
-    state.snapshot.service_count = state.config.service_count;
-    for (size_t i = 0; i < state.config.server_count; i++) {
-        ServerStatus *status = &state.snapshot.servers[i];
-        snprintf(status->name, sizeof(status->name), "%s", state.config.servers[i].name);
-        snprintf(status->address, sizeof(status->address), "%s", state.config.servers[i].address);
+    state->snapshot.server_count = state->config.server_count;
+    state->snapshot.service_count = state->config.service_count;
+    for (size_t i = 0; i < state->config.server_count; i++) {
+        ServerStatus *status = &state->snapshot.servers[i];
+        snprintf(status->name, sizeof(status->name), "%s", state->config.servers[i].name);
+        snprintf(status->address, sizeof(status->address), "%s", state->config.servers[i].address);
         status->cpu_percent = -1.0;
         status->memory_percent = -1.0;
         status->disk_percent = -1.0;
     }
-    for (size_t i = 0; i < state.config.service_count; i++) {
-        ServiceStatus *status = &state.snapshot.services[i];
-        snprintf(status->name, sizeof(status->name), "%s", state.config.services[i].name);
-        snprintf(status->server, sizeof(status->server), "%s", state.config.services[i].server);
-        snprintf(status->target, sizeof(status->target), "%s", state.config.services[i].target);
+    for (size_t i = 0; i < state->config.service_count; i++) {
+        ServiceStatus *status = &state->snapshot.services[i];
+        snprintf(status->name, sizeof(status->name), "%s", state->config.services[i].name);
+        snprintf(status->server, sizeof(status->server), "%s", state->config.services[i].server);
+        snprintf(status->target, sizeof(status->target), "%s", state->config.services[i].target);
     }
     {
-        int database_result = db_open(&state.database, state.config.database, error, sizeof(error));
+        int database_result = db_open(&state->database, state->config.database, error, sizeof(error));
         if (database_result != 0) {
             fprintf(stderr, "cannot initialize database: %s\n", error);
-            pthread_cond_destroy(&state.condition);
-            pthread_mutex_destroy(&state.mutex);
+            pthread_cond_destroy(&state->condition);
+            pthread_mutex_destroy(&state->mutex);
+            free(state);
             return 1;
         }
     }
     {
-        int thread_error = pthread_create(&worker, NULL, worker_main, &state);
+        int thread_error = pthread_create(&worker, NULL, worker_main, state);
         if (thread_error != 0) {
             fprintf(stderr, "cannot start monitoring worker: %s\n", strerror(thread_error));
-            sqlite3_close(state.database);
-            pthread_cond_destroy(&state.condition);
-            pthread_mutex_destroy(&state.mutex);
+            sqlite3_close(state->database);
+            pthread_cond_destroy(&state->condition);
+            pthread_mutex_destroy(&state->mutex);
+            free(state);
             return 1;
         }
     }
-    ui_run(&state);
-    worker_stop(&state, worker);
-    sqlite3_close(state.database);
-    pthread_cond_destroy(&state.condition);
-    pthread_mutex_destroy(&state.mutex);
+    ui_run(state);
+    worker_stop(state, worker);
+    sqlite3_close(state->database);
+    pthread_cond_destroy(&state->condition);
+    pthread_mutex_destroy(&state->mutex);
+    free(state);
     return 0;
 }

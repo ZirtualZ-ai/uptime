@@ -317,7 +317,7 @@ static void draw_compact_view(const AppState *state, const AppSnapshot *snapshot
             row = compact_line(row, columns, text, strcmp(snapshot->local.ipv4, "not connected") == 0 ? 4 : 2, 0);
         }
         if (row < content_end) {
-            snprintf(text, sizeof(text), "UP %s  LOAD %s", snapshot->local.uptime, snapshot->local.load);
+            snprintf(text, sizeof(text), "UP %.32s  LOAD %.32s", snapshot->local.uptime, snapshot->local.load);
             row = compact_line(row, columns, text, 0, 0);
         }
         if (row < content_end) {

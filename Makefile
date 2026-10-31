@@ -8,6 +8,7 @@ LDLIBS += -lncursesw -lsqlite3 -lm -pthread
 
 SOURCES = src/main.c src/ui.c src/local.c src/config.c src/db.c src/process.c src/worker.c src/wol.c
 OBJECTS = $(SOURCES:.c=.o)
+DEPFILES = $(OBJECTS:.o=.d)
 TARGET = uptime-console
 PREFIX ?= /usr/local
 SYSCONFDIR ?= /etc/uptime
@@ -21,7 +22,9 @@ $(TARGET): $(OBJECTS)
 	$(CC) $(LDFLAGS) -o $@ $(OBJECTS) $(LDLIBS)
 
 src/%.o: src/%.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+	$(CC) $(CPPFLAGS) $(CFLAGS) -MMD -MP -c -o $@ $<
+
+-include $(DEPFILES)
 
 check: $(TARGET)
 	./$(TARGET) --version
@@ -33,4 +36,4 @@ install: $(TARGET)
 	install -m 644 uptime.conf.example $(DESTDIR)$(SYSCONFDIR)/uptime.conf.example
 
 clean:
-	rm -f $(OBJECTS) $(TARGET)
+	rm -f $(OBJECTS) $(DEPFILES) $(TARGET)
