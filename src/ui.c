@@ -33,6 +33,18 @@ static void format_time(time_t value, char *output, size_t output_size)
     }
 }
 
+static void format_short_time(time_t value, char *output, size_t output_size)
+{
+    struct tm local_time;
+    if (value == 0) {
+        snprintf(output, output_size, "--:--:--");
+    } else if (localtime_r(&value, &local_time) != NULL) {
+        strftime(output, output_size, "%H:%M:%S", &local_time);
+    } else {
+        snprintf(output, output_size, "--:--:--");
+    }
+}
+
 static void draw_header(const AppSnapshot *snapshot, int columns)
 {
     time_t now = time(NULL);
@@ -263,16 +275,135 @@ static void draw_config(const AppState *state, int columns)
     put_text(row, 4, "SSH uses BatchMode and key authentication; no passwords are stored.", columns - 6, 5, 0);
 }
 
+static int compact_line(int row, int columns, const char *text, int color, int bold)
+{
+    int width = columns - 1;
+    if (row < 0 || row >= LINES || width <= 0) return row;
+    put_text(row, 0, text, width, color, bold);
+    return row + 1;
+}
+
+static void draw_compact_view(const AppState *state, const AppSnapshot *snapshot,
+                              int screen, int selected, int rows, int columns)
+{
+    char text[UPTIME_DETAIL];
+    char timestamp[32];
+    int row = 0;
+    int content_end = rows - 1;
+
+    if (rows <= 0 || columns <= 0) return;
+    if (rows == 1) {
+        compact_line(0, columns, "UPTIME  Q quit", 1, 1);
+        return;
+    }
+
+    snprintf(text, sizeof(text), "UPTIME %s  [%d/7]", UPTIME_VERSION, screen);
+    row = compact_line(row, columns, text, 1, 1);
+    if (row < content_end) {
+        time_t now = time(NULL);
+        struct tm local_time;
+        if (localtime_r(&now, &local_time) != NULL) {
+            strftime(timestamp, sizeof(timestamp), "%H:%M:%S", &local_time);
+        } else {
+            snprintf(timestamp, sizeof(timestamp), "--:--:--");
+        }
+        snprintf(text, sizeof(text), "%s  %s", timestamp, snapshot->local.hostname);
+        row = compact_line(row, columns, text, 0, 0);
+    }
+
+    if (screen == 1) {
+        if (row < content_end) {
+            snprintf(text, sizeof(text), "NET %s  %s", strcmp(snapshot->local.ipv4, "not connected") == 0 ? "DOWN" : "UP", snapshot->local.ipv4);
+            row = compact_line(row, columns, text, strcmp(snapshot->local.ipv4, "not connected") == 0 ? 4 : 2, 0);
+        }
+        if (row < content_end) {
+            snprintf(text, sizeof(text), "UP %s  LOAD %s", snapshot->local.uptime, snapshot->local.load);
+            row = compact_line(row, columns, text, 0, 0);
+        }
+        if (row < content_end) {
+            snprintf(text, sizeof(text), "MEM %s", snapshot->local.memory);
+            row = compact_line(row, columns, text, 0, 0);
+        }
+        if (row < content_end) {
+            snprintf(text, sizeof(text), "LAN %s %zu/%zu %s", state->config_file[0] ? state->config.subnet : "off",
+                     snapshot->online_devices, snapshot->device_count,
+                     snapshot->scanning ? "SCANNING" : "");
+            row = compact_line(row, columns, text, snapshot->scanning ? 3 : 0, 0);
+        }
+        if (row < content_end) {
+            snprintf(text, sizeof(text), "HOSTS %zu/%zu  SVC %zu/%zu",
+                     snapshot->online_servers, snapshot->server_count,
+                     snapshot->online_services, snapshot->service_count);
+            row = compact_line(row, columns, text, 1, 0);
+        }
+        if (snapshot->event_count > 0 && row < content_end) {
+            format_short_time(snapshot->events[0].occurred_at, timestamp, sizeof(timestamp));
+            snprintf(text, sizeof(text), "EVENT %.8s %.150s", timestamp, snapshot->events[0].message);
+            row = compact_line(row, columns, text, snapshot->events[0].level >= 2 ? 4 : 3, 0);
+        }
+    } else if (screen == 2) {
+        for (size_t i = 0; i < snapshot->server_count && row < content_end; i++) {
+            const ServerStatus *server = &snapshot->servers[i];
+            snprintf(text, sizeof(text), "%c %.18s %.15s ping:%s ssh:%s",
+                     (int)i == selected ? '>' : ' ', server->name, server->address,
+                     server->checked_at == 0 ? "wait" : server->ping_ok ? "up" : "down",
+                     server->checked_at == 0 ? "wait" : server->ssh_ok ? "up" : "down");
+            row = compact_line(row, columns, text, server->checked_at == 0 ? 1 : status_color(server->ping_ok), (int)i == selected);
+        }
+        if (snapshot->server_count == 0 && row < content_end) row = compact_line(row, columns, "No servers configured", 3, 0);
+    } else if (screen == 3) {
+        for (size_t i = 0; i < snapshot->service_count && row < content_end; i++) {
+            const ServiceStatus *service = &snapshot->services[i];
+            snprintf(text, sizeof(text), "%c %.18s %s %.0fms fail:%u",
+                     (int)i == selected ? '>' : ' ', service->name,
+                     service->checked_at == 0 ? "wait" : service->online ? "up" : "down",
+                     service->response_ms, service->failures);
+            row = compact_line(row, columns, text, service->checked_at == 0 ? 1 : status_color(service->online), (int)i == selected);
+        }
+        if (snapshot->service_count == 0 && row < content_end) row = compact_line(row, columns, "No services configured", 3, 0);
+    } else if (screen == 4 || screen == 5) {
+        for (size_t i = 0; i < snapshot->device_count && row < content_end; i++) {
+            const DeviceRecord *device = &snapshot->devices[i];
+            snprintf(text, sizeof(text), "%c %s %.18s %.16s",
+                     (int)i == selected ? '>' : ' ', device->online ? "UP" : "--",
+                     device->ip, device->hostname[0] ? device->hostname : device->mac);
+            row = compact_line(row, columns, text, device->online ? 2 : 5, (int)i == selected);
+        }
+        if (snapshot->device_count == 0 && row < content_end) row = compact_line(row, columns, "No device history", 5, 0);
+    } else if (screen == 6) {
+        for (size_t i = 0; i < snapshot->event_count && row < content_end; i++) {
+            format_short_time(snapshot->events[i].occurred_at, timestamp, sizeof(timestamp));
+            snprintf(text, sizeof(text), "%.8s %.150s", timestamp, snapshot->events[i].message);
+            row = compact_line(row, columns, text,
+                               snapshot->events[i].level >= 2 ? 4 : snapshot->events[i].level == 1 ? 3 : 2, 0);
+        }
+        if (snapshot->event_count == 0 && row < content_end) row = compact_line(row, columns, "No recent events", 5, 0);
+    } else if (screen == 7) {
+        snprintf(text, sizeof(text), "CFG %.150s", state->config_file[0] ? state->config_file : "local-only");
+        if (row < content_end) row = compact_line(row, columns, text, 0, 0);
+        snprintf(text, sizeof(text), "DB %.150s", state->config.database);
+        if (row < content_end) row = compact_line(row, columns, text, 0, 0);
+        snprintf(text, sizeof(text), "SCAN %u sec  MON %u sec", state->config.scan_interval, state->config.monitor_interval);
+        if (row < content_end) row = compact_line(row, columns, text, 0, 0);
+    }
+
+    if (content_end > 0) {
+        snprintf(text, sizeof(text), "1-7 views  R scan  W wake  Q quit");
+        attron(A_REVERSE);
+        mvhline(rows - 1, 0, ' ', columns);
+        put_text(rows - 1, 0, text, columns - 1, 0, 0);
+        attroff(A_REVERSE);
+    }
+}
+
 static void draw_view(const AppState *state, const AppSnapshot *snapshot, int screen, int selected)
 {
     int rows;
     int columns;
     getmaxyx(stdscr, rows, columns);
     erase();
-    if (rows < 14 || columns < 60) {
-        put_text(0, 0, "UPTIME - terminal too small; enlarge to at least 60 x 14", columns, 1, 1);
-        if (rows > 2) put_text(2, 2, snapshot->notice, columns - 4, 3, 0);
-        draw_footer(rows, columns);
+    if (rows < 24 || columns < 80) {
+        draw_compact_view(state, snapshot, screen, selected, rows, columns);
         refresh();
         return;
     }

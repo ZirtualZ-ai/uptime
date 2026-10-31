@@ -5,6 +5,7 @@
 
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <sqlite3.h>
 #include <stddef.h>
 #include <time.h>
 
@@ -115,6 +116,7 @@ typedef struct {
     AppConfig config;
     AppSnapshot snapshot;
     char config_file[UPTIME_PATH];
+    sqlite3 *database;
     pthread_mutex_t mutex;
     pthread_cond_t condition;
     int stopping;

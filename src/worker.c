@@ -336,18 +336,15 @@ static void check_service(AppState *state, sqlite3 *database, size_t index)
     pthread_mutex_unlock(&state->mutex);
 }
 
-static void *worker_main(void *argument)
+void *worker_main(void *argument)
 {
     AppState *state = argument;
-    sqlite3 *database = NULL;
-    char error[UPTIME_DETAIL];
+    sqlite3 *database = state->database;
     time_t next_monitor = 0;
     time_t next_scan = 0;
     time_t next_services[UPTIME_MAX_SERVICES] = {0};
 
-    if (db_open(&database, state->config.database, error, sizeof(error)) != 0) {
-        set_notice(state, error);
-    } else {
+    {
         AppSnapshot initial = {0};
         db_load_devices(database, &initial);
         db_load_events(database, &initial);
@@ -406,13 +403,7 @@ static void *worker_main(void *argument)
         }
         pthread_mutex_unlock(&state->mutex);
     }
-    if (database != NULL) sqlite3_close(database);
     return NULL;
-}
-
-int worker_start(AppState *state, pthread_t *thread)
-{
-    return pthread_create(thread, NULL, worker_main, state);
 }
 
 void worker_stop(AppState *state, pthread_t thread)

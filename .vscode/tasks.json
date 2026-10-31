@@ -1,0 +1,29 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Debug worker pthread argument",
+			"type": "shell",
+			"command": "mkdir -p /tmp/uptime-gdb-worker2 && cd /tmp/uptime-gdb-worker2 && gdb --batch -ex 'set pagination off' -ex 'set breakpoint pending on' -ex 'set env TERM xterm-256color' -ex 'break worker_main' -ex run -ex 'print argument' -ex 'print state' -ex 'print state->database' -ex bt --args /lib64/ld-linux-x86-64.so.2 /mnt/media/Folders/Documents/Projects/C-C++/ideapad/uptime-console",
+			"problemMatcher": []
+		},
+		{
+			"label": "Inspect worker argument in GDB",
+			"type": "shell",
+			"command": "cd /tmp/uptime-gdb-worker2 && gdb --batch -ex 'set pagination off' -ex 'set exec-wrapper /lib64/ld-linux-x86-64.so.2' -ex 'break worker_main' -ex run -ex 'print argument' -ex 'print state' -ex 'print state->database' -ex bt --args /mnt/media/Folders/Documents/Projects/C-C++/ideapad/uptime-console",
+			"problemMatcher": []
+		},
+		{
+			"label": "Build Uptime with debug symbols",
+			"type": "shell",
+			"command": "make clean && make CPPFLAGS='-D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -Isrc -I/tmp/uptime-deps/root/usr/include' CFLAGS='-O0 -g3 -std=c11 -Wall -Wextra -Wpedantic -pthread' LDFLAGS='-L/tmp/uptime-deps/root/usr/lib/x86_64-linux-gnu -Wl,-rpath-link,/usr/lib/x86_64-linux-gnu'",
+			"problemMatcher": []
+		},
+		{
+			"label": "Trace AppState pthread handoff",
+			"type": "shell",
+			"command": "cd /tmp/uptime-gdb-worker2 && gdb --batch -ex 'set pagination off' -ex 'set exec-wrapper /lib64/ld-linux-x86-64.so.2' -ex 'break main' -ex 'break worker_main' -ex run -ex 'info threads' -ex 'print argument' -ex 'print state' -ex 'print state->database' -ex bt --args /mnt/media/Folders/Documents/Projects/C-C++/ideapad/uptime-console",
+			"problemMatcher": []
+		}
+	]
+}

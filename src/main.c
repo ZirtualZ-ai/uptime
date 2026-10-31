@@ -101,9 +101,19 @@ int main(int argc, char **argv)
         snprintf(status->target, sizeof(status->target), "%s", state.config.services[i].target);
     }
     {
-        int thread_error = worker_start(&state, &worker);
+        int database_result = db_open(&state.database, state.config.database, error, sizeof(error));
+        if (database_result != 0) {
+            fprintf(stderr, "cannot initialize database: %s\n", error);
+            pthread_cond_destroy(&state.condition);
+            pthread_mutex_destroy(&state.mutex);
+            return 1;
+        }
+    }
+    {
+        int thread_error = pthread_create(&worker, NULL, worker_main, &state);
         if (thread_error != 0) {
             fprintf(stderr, "cannot start monitoring worker: %s\n", strerror(thread_error));
+            sqlite3_close(state.database);
             pthread_cond_destroy(&state.condition);
             pthread_mutex_destroy(&state.mutex);
             return 1;
@@ -111,6 +121,7 @@ int main(int argc, char **argv)
     }
     ui_run(&state);
     worker_stop(&state, worker);
+    sqlite3_close(state.database);
     pthread_cond_destroy(&state.condition);
     pthread_mutex_destroy(&state.mutex);
     return 0;
