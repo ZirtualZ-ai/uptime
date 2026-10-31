@@ -44,7 +44,7 @@ make install
 /usr/local/bin/uptime-console --version
 ```
 
-The version should report `Uptime 0.1.1`. In GDB, set breakpoints on `main` and `worker_main` and verify the `state` pointer immediately before `pthread_create` matches the worker's `argument`.
+The version should report `Uptime 0.1.2`. In GDB, set breakpoints on the `pthread_create` call in `main` and `worker_main` and verify the `state` pointer immediately before creation matches the worker's `argument`.
 
 Start it from TTY1 or an SSH session:
 

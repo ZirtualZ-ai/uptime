@@ -8,7 +8,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define UPTIME_VERSION "0.1.1"
+#define UPTIME_VERSION "0.1.2"
 
 int main(int argc, char **argv)
 {

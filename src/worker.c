@@ -200,13 +200,17 @@ static void perform_scan(AppState *state, sqlite3 *database)
     size_t count = 0;
     char seen[UPTIME_MAX_DEVICES][INET_ADDRSTRLEN];
     size_t seen_count = 0;
-    DeviceRecord previous_devices[UPTIME_MAX_DEVICES];
-    size_t previous_count;
+    char previously_online_ips[UPTIME_MAX_DEVICES][INET_ADDRSTRLEN];
+    size_t previously_online_count = 0;
     int result;
 
     pthread_mutex_lock(&state->mutex);
-    previous_count = state->snapshot.device_count;
-    memcpy(previous_devices, state->snapshot.devices, previous_count * sizeof(previous_devices[0]));
+    for (size_t i = 0; i < state->snapshot.device_count && previously_online_count < UPTIME_MAX_DEVICES; i++) {
+        if (state->snapshot.devices[i].online) {
+            snprintf(previously_online_ips[previously_online_count++], INET_ADDRSTRLEN,
+                     "%s", state->snapshot.devices[i].ip);
+        }
+    }
     state->snapshot.scanning = 1;
     snprintf(state->snapshot.scan_message, sizeof(state->snapshot.scan_message), "Scanning %s with Nmap", state->config.subnet);
     pthread_mutex_unlock(&state->mutex);
@@ -253,17 +257,16 @@ static void perform_scan(AppState *state, sqlite3 *database)
         }
         count++;
     }
-    for (size_t i = 0; i < previous_count; i++) {
+    for (size_t i = 0; i < previously_online_count; i++) {
         int still_seen = 0;
-        if (!previous_devices[i].online) continue;
         for (size_t j = 0; j < seen_count; j++) {
-            if (strcmp(previous_devices[i].ip, seen[j]) == 0) {
+            if (strcmp(previously_online_ips[i], seen[j]) == 0) {
                 still_seen = 1;
                 break;
             }
         }
         if (!still_seen) {
-            snprintf(message, sizeof(message), "Device %.15s disappeared from the network", previous_devices[i].ip);
+            snprintf(message, sizeof(message), "Device %.15s disappeared from the network", previously_online_ips[i]);
             add_event(state, database, 1, message);
         }
     }
@@ -344,21 +347,10 @@ void *worker_main(void *argument)
     time_t next_scan = 0;
     time_t next_services[UPTIME_MAX_SERVICES] = {0};
 
-    {
-        AppSnapshot initial = {0};
-        db_load_devices(database, &initial);
-        db_load_events(database, &initial);
-        initial.last_scan = db_load_last_scan(database);
-        pthread_mutex_lock(&state->mutex);
-        memcpy(state->snapshot.devices, initial.devices, sizeof(initial.devices));
-        memcpy(state->snapshot.events, initial.events, sizeof(initial.events));
-        state->snapshot.device_count = initial.device_count;
-        state->snapshot.event_count = initial.event_count;
-        state->snapshot.online_devices = initial.online_devices;
-        state->snapshot.last_scan = initial.last_scan;
-        pthread_mutex_unlock(&state->mutex);
-    }
     pthread_mutex_lock(&state->mutex);
+    db_load_devices(database, &state->snapshot);
+    db_load_events(database, &state->snapshot);
+    state->snapshot.last_scan = db_load_last_scan(database);
     state->snapshot.worker_ready = 1;
     pthread_mutex_unlock(&state->mutex);
 
