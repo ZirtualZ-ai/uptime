@@ -23,10 +23,16 @@ if [ -f "$profile" ] && ! grep -F '# uptime-console interactive SSH launch' "$pr
         printf 'case $- in *i*) ;; *) return ;; esac\n'
         printf '[ -n "${SSH_TTY:-}" ] || return\n'
         printf '[ -t 0 ] && [ -t 1 ] || return\n'
-        printf 'exec %s\n' "$command"
+        printf '%s\n' "$command"
     } >> "$profile_temporary"
     mv "$profile_temporary" "$profile"
     echo "Configured interactive SSH logins to open uptime-console. Original profile: $profile_backup"
+elif [ -f "$profile" ]; then
+    awk -v old="exec $command" -v command="$command" '$0 == old { print command; next } { print }' \
+        "$profile" > "$profile_temporary"
+    chmod 644 "$profile_temporary"
+    chown root:root "$profile_temporary"
+    mv "$profile_temporary" "$profile"
 fi
 
 if [ ! -f "$inittab" ]; then

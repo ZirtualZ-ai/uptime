@@ -38,7 +38,7 @@ vi /etc/uptime/uptime.conf
 reboot
 ```
 
-On Alpine, `make install` creates `/etc/uptime/uptime.conf` from the example when no config exists, creates `/var/lib/uptime` for the database, replaces the TTY1 `respawn` entry in `/etc/inittab`, and adds a guarded launch to `/etc/profile`. The profile starts Uptime only when the shell is interactive and has an SSH TTY, so non-interactive commands such as `ssh host uptime` continue to run normally. Original files are backed up as `/etc/inittab.uptime-console.bak` and `/etc/profile.uptime-console.bak`. Review the installed config and network subnet before rebooting. Nmap, SSH client, and curl must be installed separately as listed above. Other Linux distributions receive the binary and config but no automatic TTY or SSH launch.
+On Alpine, `make install` creates `/etc/uptime/uptime.conf` from the example when no config exists, creates `/var/lib/uptime` for the database, replaces the TTY1 `respawn` entry in `/etc/inittab`, and adds a guarded launch to `/etc/profile`. The profile starts Uptime only when the shell is interactive and has an SSH TTY, so non-interactive commands such as `ssh host uptime` continue to run normally. It does not replace the login shell: press `Q` in Uptime to return to the same SSH shell without closing the connection. Original files are backed up as `/etc/inittab.uptime-console.bak` and `/etc/profile.uptime-console.bak`. Review the installed config and network subnet before rebooting. Nmap, SSH client, and curl must be installed separately as listed above. Other Linux distributions receive the binary and config but no automatic TTY or SSH launch.
 
 To rebuild with debug symbols on the Alpine machine and replace the installed executable:
 
