@@ -93,6 +93,10 @@ Start from [`uptime.conf.example`](uptime.conf.example). It includes the request
 subnet = 192.168.40.0/24
 scan_interval = 300
 monitor_interval = 60
+scan_profile = discovery
+scan_timeout = 120
+scan_max_rate = 100
+scan_max_retries = 1
 database = /var/lib/uptime/uptime.db
 scan_enabled = true
 

@@ -522,7 +522,7 @@ static void connect_server(AppState *state, int screen, int selected)
     const ServerConfig *server;
     char port[16];
     pid_t child;
-    int status;
+    int status = -1;
     char notice[UPTIME_DETAIL];
 
     if (screen != 2 || selected < 0 || (size_t)selected >= state->config.server_count) {
@@ -640,7 +640,6 @@ static int ssh_device(AppState *state, const DeviceRecord *selected_device, int 
     fflush(NULL);
     child = fork();
     if (child == 0) {
-        if (auth_log_fd >= 0) close(auth_log_fd);
         if (auth_log_fd >= 0) {
             execlp("ssh", "ssh", "-vv", "-E", auth_log, "-t", "-p", port_text,
                    "-l", device.ssh_user, device.ip, (char *)NULL);
