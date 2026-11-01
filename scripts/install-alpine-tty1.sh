@@ -7,11 +7,28 @@ inittab=/etc/inittab
 backup=/etc/inittab.uptime-console.bak
 temporary=/etc/inittab.uptime-console.tmp
 command="${prefix}/bin/uptime-console -c ${sysconfdir}/uptime.conf"
+profile=/etc/profile
+profile_backup=/etc/profile.uptime-console.bak
+profile_temporary=/etc/profile.uptime-console.tmp
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "TTY1 setup requires root; install the binary and config manually." >&2
     exit 1
 fi
+if [ -f "$profile" ] && ! grep -F '# uptime-console interactive SSH launch' "$profile" >/dev/null 2>&1; then
+    if [ ! -e "$profile_backup" ]; then cp -p "$profile" "$profile_backup"; fi
+    cp -p "$profile" "$profile_temporary"
+    {
+        printf '\n# uptime-console interactive SSH launch\n'
+        printf 'case $- in *i*) ;; *) return ;; esac\n'
+        printf '[ -n "${SSH_TTY:-}" ] || return\n'
+        printf '[ -t 0 ] && [ -t 1 ] || return\n'
+        printf 'exec %s\n' "$command"
+    } >> "$profile_temporary"
+    mv "$profile_temporary" "$profile"
+    echo "Configured interactive SSH logins to open uptime-console. Original profile: $profile_backup"
+fi
+
 if [ ! -f "$inittab" ]; then
     echo "Alpine inittab not found at $inittab; skipping TTY1 setup." >&2
     exit 0

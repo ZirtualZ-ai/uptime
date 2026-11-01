@@ -12,6 +12,7 @@ Uptime is a small C11/ncurses operations console for a homelab station. It runs 
 - TCP and HTTP/HTTPS service checks, response times, failure counts, and transition events.
 - UDP Wake-on-LAN magic packets; sending a packet is reported separately from confirming that the host booted.
 - Automatic watchdog recovery: three consecutive missed pings confirm an outage, followed by WOL retries no more than once every five minutes. A discovered target IP and MAC are retained in SQLite for later wake attempts.
+- Managed-server SSH access from the Servers view using the system SSH client, plus discovery labels that distinguish managed SSH hosts from other devices.
 - Versioned SQLite schema, 15-minute health samples plus state transitions, and automatic retention of old telemetry.
 
 Configuration is an INI-style file. The configuration view is read-only; edit the file and restart Uptime to apply changes.
@@ -37,7 +38,7 @@ vi /etc/uptime/uptime.conf
 reboot
 ```
 
-On Alpine, `make install` creates `/etc/uptime/uptime.conf` from the example when no config exists, creates `/var/lib/uptime` for the database, and replaces the TTY1 `respawn` entry in `/etc/inittab` with `uptime-console`. It backs up the original file at `/etc/inittab.uptime-console.bak`; TTY1 will launch the console at boot and restart it if it exits. Review the installed config and network subnet before rebooting. Nmap, SSH client, and curl must be installed separately as listed above. Other Linux distributions receive the binary and config but no automatic TTY takeover.
+On Alpine, `make install` creates `/etc/uptime/uptime.conf` from the example when no config exists, creates `/var/lib/uptime` for the database, replaces the TTY1 `respawn` entry in `/etc/inittab`, and adds a guarded launch to `/etc/profile`. The profile starts Uptime only when the shell is interactive and has an SSH TTY, so non-interactive commands such as `ssh host uptime` continue to run normally. Original files are backed up as `/etc/inittab.uptime-console.bak` and `/etc/profile.uptime-console.bak`. Review the installed config and network subnet before rebooting. Nmap, SSH client, and curl must be installed separately as listed above. Other Linux distributions receive the binary and config but no automatic TTY or SSH launch.
 
 To rebuild with debug symbols on the Alpine machine and replace the installed executable:
 
@@ -56,14 +57,6 @@ Start it manually from a terminal when not using the Alpine TTY1 setup:
 ```
 
 The `ncurses-dev` and `sqlite-dev` packages are the development packages; `openssh-client-default` is the Alpine package providing the SSH client (there is no package named `openssh-client` in the checked v3.24 x86 index). Alpine's base BusyBox supplies `ping`.
-
-For an optional local TTY1 login launch, add this to the interactive user's `~/.profile` after testing the command manually:
-
-```sh
-if [ "$(tty)" = /dev/tty1 ] && [ -z "${SSH_TTY:-}" ]; then
-    exec /usr/local/bin/uptime-console -c /etc/uptime/uptime.conf
-fi
-```
 
 ## Debian Development
 
@@ -145,11 +138,12 @@ The database is created on first launch. Health samples older than 30 days, even
 | `6` | Events |
 | `7` | Configuration |
 | `Up` / `Down`, `k` / `j` | Select a row |
+| `Enter` / `S` | SSH to the selected managed server on the Servers view |
 | `W` | Send Wake-on-LAN to the selected server on the Servers view |
 | `R` | Queue a network discovery scan |
 | `Q` | Quit |
 
-Nmap scans run on the worker thread and have a 120-second timeout. Server and service checks share that background worker; a long scan can delay their next scheduled check, but does not block terminal input. Server statistics use one SSH connection per configured monitoring interval, with a one-second remote CPU sampling window. Health history is persisted on first observation, state changes, and at most every 15 minutes while stable to reduce disk writes.
+SSH connections are launched with the system `ssh` client and an interactive terminal; the ncurses screen is suspended for the session and restored when it exits. Configured address, user, and port are used, while the operating system's SSH keys, `known_hosts`, and SSH client configuration remain in effect. Discovered-only devices are labeled `DISCOVERED` and are not assumed to accept SSH. Nmap scans run on the worker thread and have a 120-second timeout. Server and service checks share that background worker; a long scan can delay their next scheduled check, but does not block terminal input. Server statistics use one SSH connection per configured monitoring interval, with a one-second remote CPU sampling window. Health history is persisted on first observation, state changes, and at most every 15 minutes while stable to reduce disk writes.
 
 ## Project Layout
 

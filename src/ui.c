@@ -3,9 +3,13 @@
 #include "wol.h"
 
 #include <ncurses.h>
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
+#include <sys/wait.h>
 #include <time.h>
+#include <unistd.h>
 
 #define UPTIME_VERSION "0.1.0"
 
@@ -67,7 +71,7 @@ static void draw_header(const AppSnapshot *snapshot, int columns)
 
 static void draw_footer(int rows, int columns)
 {
-    const char *shortcuts = " 1-7 Views   Up/Down Select   W Wake   R Scan   Q Quit ";
+    const char *shortcuts = " 1-7 Views   Up/Down Select   Enter/S SSH   W Wake   R Scan   Q Quit ";
     if (rows < 1) return;
     attron(A_REVERSE);
     mvhline(rows - 1, 0, ' ', columns);
@@ -175,7 +179,7 @@ static void draw_servers(const AppSnapshot *snapshot, int columns, int selected)
     int visible = (LINES - 8) / 2;
     int first = selected >= visible ? selected - visible + 1 : 0;
     char row[UPTIME_DETAIL];
-    put_text(3, 2, "SERVER HEALTH  (W sends a magic packet to the selected server)", columns - 4, 1, 1);
+    put_text(3, 2, "MANAGED SERVERS  (Enter/S SSH  W wake)", columns - 4, 1, 1);
     for (int i = first; i < (int)snapshot->server_count && i < first + visible; i++) {
         const ServerStatus *server = &snapshot->servers[i];
         char cpu[16];
@@ -215,19 +219,36 @@ static void draw_services(const AppState *state, const AppSnapshot *snapshot, in
     if (snapshot->service_count == 0) put_text(5, 3, "No services configured.", columns - 6, 3, 0);
 }
 
-static void draw_devices(const AppSnapshot *snapshot, int columns, int history, int selected)
+static int device_is_managed(const AppState *state, const DeviceRecord *device)
+{
+    for (size_t i = 0; i < state->config.server_count; i++) {
+        const ServerConfig *server = &state->config.servers[i];
+        size_t name_length = strlen(server->name);
+        const char *dot = strchr(device->hostname, '.');
+
+        if (strcmp(server->address, device->ip) == 0) return 1;
+        if (device->hostname[0] != '\0' &&
+            (strcasecmp(server->name, device->hostname) == 0 ||
+             (dot != NULL && (size_t)(dot - device->hostname) == name_length &&
+              strncasecmp(server->name, device->hostname, name_length) == 0))) return 1;
+    }
+    return 0;
+}
+
+static void draw_devices(const AppState *state, const AppSnapshot *snapshot, int columns, int history, int selected)
 {
     int visible = LINES - 9;
     int first = selected >= visible ? selected - visible + 1 : 0;
     char row[UPTIME_DETAIL];
     put_text(3, 2, history ? "DEVICE HISTORY" : "NETWORK DISCOVERY", columns - 4, 1, 1);
     put_text(4, 3, snapshot->scanning ? snapshot->scan_message : "Use R to run a configured-subnet Nmap discovery scan.", columns - 6, 3, 0);
-    put_text(5, 3, "STATE  IP              HOSTNAME               MAC                MANUFACTURER", columns - 6, 5, 1);
+    put_text(5, 3, "STATE  IP              HOSTNAME               MAC                MANUFACTURER       ACCESS", columns - 6, 5, 1);
     for (int i = first; i < (int)snapshot->device_count && i < first + visible; i++) {
         const DeviceRecord *device = &snapshot->devices[i];
-        snprintf(row, sizeof(row), "%-5s  %-15s %-22s %-18s %s", device->online ? "UP" : "DOWN",
+        snprintf(row, sizeof(row), "%-5s  %-15s %-22s %-18s %-18.18s %s", device->online ? "UP" : "DOWN",
                  device->ip, device->hostname[0] ? device->hostname : "-",
-                 device->mac[0] ? device->mac : "-", device->vendor[0] ? device->vendor : "-");
+             device->mac[0] ? device->mac : "-", device->vendor[0] ? device->vendor : "-",
+             device_is_managed(state, device) ? "MANAGED + SSH" : "DISCOVERED");
         put_text(6 + i - first, 3, row, columns - 6, device->online ? 2 : (history ? 5 : 4), i == selected);
     }
     if (history && selected >= 0 && (size_t)selected < snapshot->device_count) {
@@ -364,9 +385,10 @@ static void draw_compact_view(const AppState *state, const AppSnapshot *snapshot
     } else if (screen == 4 || screen == 5) {
         for (size_t i = 0; i < snapshot->device_count && row < content_end; i++) {
             const DeviceRecord *device = &snapshot->devices[i];
-            snprintf(text, sizeof(text), "%c %s %.18s %.16s",
+            snprintf(text, sizeof(text), "%c %s %.18s %.16s %s",
                      (int)i == selected ? '>' : ' ', device->online ? "UP" : "--",
-                     device->ip, device->hostname[0] ? device->hostname : device->mac);
+                     device->ip, device->hostname[0] ? device->hostname : device->mac,
+                     device_is_managed(state, device) ? "MANAGED+SSH" : "DISCOVERED");
             row = compact_line(row, columns, text, device->online ? 2 : 5, (int)i == selected);
         }
         if (snapshot->device_count == 0 && row < content_end) row = compact_line(row, columns, "No device history", 5, 0);
@@ -388,7 +410,7 @@ static void draw_compact_view(const AppState *state, const AppSnapshot *snapshot
     }
 
     if (content_end > 0) {
-        snprintf(text, sizeof(text), "1-7 views  R scan  W wake  Q quit");
+        snprintf(text, sizeof(text), "1-7 views  Enter/S SSH  R scan  W wake  Q quit");
         attron(A_REVERSE);
         mvhline(rows - 1, 0, ' ', columns);
         put_text(rows - 1, 0, text, columns - 1, 0, 0);
@@ -412,8 +434,8 @@ static void draw_view(const AppState *state, const AppSnapshot *snapshot, int sc
     case 1: draw_overview(state, snapshot, columns); break;
     case 2: draw_servers(snapshot, columns, selected); break;
     case 3: draw_services(state, snapshot, columns, selected); break;
-    case 4: draw_devices(snapshot, columns, 0, selected); break;
-    case 5: draw_devices(snapshot, columns, 1, selected); break;
+    case 4: draw_devices(state, snapshot, columns, 0, selected); break;
+    case 5: draw_devices(state, snapshot, columns, 1, selected); break;
     case 6: draw_events(snapshot, columns); break;
     case 7: draw_config(state, columns); break;
     default: break;
@@ -458,6 +480,49 @@ static void wake_server(AppState *state, const AppSnapshot *snapshot, int screen
                      server->name, snapshot->servers[selected].ping_ok ? "online" : "offline");
         }
     }
+    pthread_mutex_lock(&state->mutex);
+    snprintf(state->snapshot.notice, sizeof(state->snapshot.notice), "%s", notice);
+    pthread_mutex_unlock(&state->mutex);
+}
+
+static void connect_server(AppState *state, int screen, int selected)
+{
+    const ServerConfig *server;
+    char port[16];
+    pid_t child;
+    int status;
+    char notice[UPTIME_DETAIL];
+
+    if (screen != 2 || selected < 0 || (size_t)selected >= state->config.server_count) {
+        snprintf(notice, sizeof(notice), "Select a managed server from the Servers view first");
+        goto report;
+    }
+    server = &state->config.servers[selected];
+    snprintf(port, sizeof(port), "%d", server->port);
+    snprintf(notice, sizeof(notice), "SSH session ended for %s", server->name);
+    def_prog_mode();
+    endwin();
+    fflush(NULL);
+    child = fork();
+    if (child == 0) {
+        execlp("ssh", "ssh", "-t", "-p", port, "-l", server->user, server->address, (char *)NULL);
+        perror("uptime-console: ssh");
+        _exit(127);
+    }
+    if (child < 0) {
+        snprintf(notice, sizeof(notice), "Cannot start SSH for %s", server->name);
+    } else {
+        while (waitpid(child, &status, 0) < 0) {
+            if (errno == EINTR) continue;
+            snprintf(notice, sizeof(notice), "Error waiting for SSH to %s", server->name);
+            break;
+        }
+    }
+    reset_prog_mode();
+    clearok(stdscr, TRUE);
+    refresh();
+
+report:
     pthread_mutex_lock(&state->mutex);
     snprintf(state->snapshot.notice, sizeof(state->snapshot.notice), "%s", notice);
     pthread_mutex_unlock(&state->mutex);
@@ -511,6 +576,8 @@ int ui_run(AppState *state)
             request_scan(state);
         } else if (key == 'w' || key == 'W') {
             wake_server(state, &snapshot, screen, selected);
+        } else if (screen == 2 && (key == '\n' || key == '\r' || key == KEY_ENTER || key == 's' || key == 'S')) {
+            connect_server(state, screen, selected);
         }
     }
     endwin();
