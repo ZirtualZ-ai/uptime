@@ -1,9 +1,11 @@
 #include "ui.h"
 
 #include "wol.h"
+#include "db.h"
 
 #include <ncurses.h>
 #include <errno.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -11,7 +13,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define UPTIME_VERSION "0.1.0"
+#define UPTIME_VERSION "0.2.0"
 
 static int color_enabled;
 
@@ -221,6 +223,7 @@ static void draw_services(const AppState *state, const AppSnapshot *snapshot, in
 
 static int device_is_managed(const AppState *state, const DeviceRecord *device)
 {
+    if (device->managed) return 1;
     for (size_t i = 0; i < state->config.server_count; i++) {
         const ServerConfig *server = &state->config.servers[i];
         size_t name_length = strlen(server->name);
@@ -240,16 +243,28 @@ static void draw_devices(const AppState *state, const AppSnapshot *snapshot, int
     int visible = LINES - 9;
     int first = selected >= visible ? selected - visible + 1 : 0;
     char row[UPTIME_DETAIL];
-    put_text(3, 2, history ? "DEVICE HISTORY" : "NETWORK DISCOVERY", columns - 4, 1, 1);
-    put_text(4, 3, snapshot->scanning ? snapshot->scan_message : "Use R to run a configured-subnet Nmap discovery scan.", columns - 6, 3, 0);
-    put_text(5, 3, "STATE  IP              HOSTNAME               MAC                MANUFACTURER       ACCESS", columns - 6, 5, 1);
+    put_text(3, 2, history ? "DEVICE HISTORY" : "NETWORK RECONNAISSANCE", columns - 4, 1, 1);
+    if (!history) {
+        snprintf(row, sizeof(row), "Subnet %.40s  Profile %s  %.120s",
+                 state->config.subnet,
+                 state->config.scan_profile == SCAN_PROFILE_STANDARD ? "STANDARD" : "DISCOVERY",
+                 snapshot->scanning ? snapshot->scan_message : "READY");
+        put_text(4, 3, row, columns - 6, snapshot->scanning ? 3 : 0, 0);
+    } else {
+        put_text(4, 3, "Retained device history", columns - 6, 3, 0);
+    }
+    if (!history) put_text(5, 3, "Enter connect  S enroll  P profile  R scan  X stop", columns - 6, 3, 0);
+    put_text(6, 3, "STATE  IP              HOSTNAME               MAC                VENDOR           SSH      PORTS", columns - 6, 5, 1);
     for (int i = first; i < (int)snapshot->device_count && i < first + visible; i++) {
         const DeviceRecord *device = &snapshot->devices[i];
-        snprintf(row, sizeof(row), "%-5s  %-15s %-22s %-18s %-18.18s %s", device->online ? "UP" : "DOWN",
+        const char *ssh_state = device->managed || device->ssh_open ? "OPEN" :
+            device->ports_known ? "CLOSED" : "?";
+        snprintf(row, sizeof(row), "%-5s  %-15s %-22s %-18s %-16.16s %-8s %-40.40s %s", device->online ? "UP" : "DOWN",
                  device->ip, device->hostname[0] ? device->hostname : "-",
-             device->mac[0] ? device->mac : "-", device->vendor[0] ? device->vendor : "-",
-             device_is_managed(state, device) ? "MANAGED + SSH" : "DISCOVERED");
-        put_text(6 + i - first, 3, row, columns - 6, device->online ? 2 : (history ? 5 : 4), i == selected);
+             device->mac[0] ? device->mac : "-", device->vendor[0] ? device->vendor : "-", ssh_state,
+                 device->open_ports[0] ? device->open_ports : "-",
+                 device_is_managed(state, device) ? "MANAGED + SSH" : "DISCOVERED");
+        put_text(7 + i - first, 3, row, columns - 6, device->online ? 2 : (history ? 5 : 4), i == selected);
     }
     if (history && selected >= 0 && (size_t)selected < snapshot->device_count) {
         char first_seen[32];
@@ -261,7 +276,7 @@ static void draw_devices(const AppState *state, const AppSnapshot *snapshot, int
                  first_seen, last_seen, device->vendor[0] ? device->vendor : "unknown");
         put_text(LINES - 3, 3, row, columns - 6, 5, 0);
     }
-    if (snapshot->device_count == 0) put_text(6, 3, "No device history yet.", columns - 6, 5, 0);
+    if (snapshot->device_count == 0) put_text(7, 3, "No device history yet.", columns - 6, 5, 0);
 }
 
 static void draw_events(const AppSnapshot *snapshot, int columns)
@@ -385,9 +400,10 @@ static void draw_compact_view(const AppState *state, const AppSnapshot *snapshot
     } else if (screen == 4 || screen == 5) {
         for (size_t i = 0; i < snapshot->device_count && row < content_end; i++) {
             const DeviceRecord *device = &snapshot->devices[i];
-            snprintf(text, sizeof(text), "%c %s %.18s %.16s %s",
+            snprintf(text, sizeof(text), "%c %s %.18s %.16s SSH:%s %s",
                      (int)i == selected ? '>' : ' ', device->online ? "UP" : "--",
                      device->ip, device->hostname[0] ? device->hostname : device->mac,
+                     device->managed || device->ssh_open ? "YES" : "NO",
                      device_is_managed(state, device) ? "MANAGED+SSH" : "DISCOVERED");
             row = compact_line(row, columns, text, device->online ? 2 : 5, (int)i == selected);
         }
@@ -410,7 +426,7 @@ static void draw_compact_view(const AppState *state, const AppSnapshot *snapshot
     }
 
     if (content_end > 0) {
-        snprintf(text, sizeof(text), "1-7 views  Enter/S SSH  R scan  W wake  Q quit");
+        snprintf(text, sizeof(text), "1-7 views  Enter/S connect  R scan  P profile  X stop  W wake  Q quit");
         attron(A_REVERSE);
         mvhline(rows - 1, 0, ' ', columns);
         put_text(rows - 1, 0, text, columns - 1, 0, 0);
@@ -453,9 +469,25 @@ static void request_scan(AppState *state)
         pthread_mutex_unlock(&state->mutex);
         return;
     }
-    state->scan_requested = 1;
-    pthread_cond_signal(&state->condition);
-    snprintf(state->snapshot.notice, sizeof(state->snapshot.notice), "Network scan queued for %s", state->config.subnet);
+    if (state->snapshot.scanning) {
+        atomic_store(&state->scan_cancelled, 1);
+        snprintf(state->snapshot.notice, sizeof(state->snapshot.notice), "Stopping the active network scan");
+    } else {
+        atomic_store(&state->scan_cancelled, 0);
+        state->scan_requested = 1;
+        pthread_cond_signal(&state->condition);
+        snprintf(state->snapshot.notice, sizeof(state->snapshot.notice), "Network scan queued for %s", state->config.subnet);
+    }
+    pthread_mutex_unlock(&state->mutex);
+}
+
+static void toggle_scan_profile(AppState *state)
+{
+    pthread_mutex_lock(&state->mutex);
+    state->config.scan_profile = state->config.scan_profile == SCAN_PROFILE_DISCOVERY ?
+        SCAN_PROFILE_STANDARD : SCAN_PROFILE_DISCOVERY;
+    snprintf(state->snapshot.notice, sizeof(state->snapshot.notice), "Scan profile: %s",
+             state->config.scan_profile == SCAN_PROFILE_STANDARD ? "STANDARD (bounded common TCP ports)" : "DISCOVERY");
     pthread_mutex_unlock(&state->mutex);
 }
 
@@ -517,6 +549,9 @@ static void connect_server(AppState *state, int screen, int selected)
             snprintf(notice, sizeof(notice), "Error waiting for SSH to %s", server->name);
             break;
         }
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+            db_mark_ssh_success(state->database, server->address);
+        }
     }
     reset_prog_mode();
     clearok(stdscr, TRUE);
@@ -526,6 +561,168 @@ report:
     pthread_mutex_lock(&state->mutex);
     snprintf(state->snapshot.notice, sizeof(state->snapshot.notice), "%s", notice);
     pthread_mutex_unlock(&state->mutex);
+}
+
+static int prompt_text(const char *label, char *value, size_t value_size)
+{
+    int row = LINES > 2 ? LINES - 2 : LINES - 1;
+    int result;
+
+    echo();
+    curs_set(1);
+    timeout(-1);
+    move(row, 0);
+    clrtoeol();
+    addnstr(label, COLS - 1);
+    refresh();
+    result = getnstr(value, (int)value_size - 1);
+    noecho();
+    curs_set(0);
+    timeout(1000);
+    return result != ERR;
+}
+
+static int ssh_log_authenticated(const char *path)
+{
+    FILE *file = fopen(path, "r");
+    char line[512];
+    int authenticated = 0;
+    if (file == NULL) return 0;
+    while (fgets(line, sizeof(line), file) != NULL) {
+        if (strstr(line, "Authenticated to ") != NULL) {
+            authenticated = 1;
+            break;
+        }
+    }
+    fclose(file);
+    return authenticated;
+}
+
+static int ssh_device(AppState *state, const DeviceRecord *selected_device, int prompt_identity)
+{
+    DeviceRecord device = *selected_device;
+    char port_text[16];
+    char prompt[UPTIME_DETAIL];
+    char message[UPTIME_DETAIL];
+    char auth_log[] = "/tmp/uptime-console-ssh-XXXXXX";
+    char *end;
+    long port;
+    pid_t child;
+    int status = -1;
+    int auth_log_fd = -1;
+
+    if (device.managed && !prompt_identity) {
+        snprintf(device.ssh_user, sizeof(device.ssh_user), "%s", selected_device->ssh_user);
+        device.ssh_port = selected_device->ssh_port;
+    } else {
+        snprintf(prompt, sizeof(prompt), "SSH username for %s: ", device.hostname[0] ? device.hostname : device.ip);
+        if (!prompt_text(prompt, device.ssh_user, sizeof(device.ssh_user)) || device.ssh_user[0] == '\0') return -1;
+        snprintf(port_text, sizeof(port_text), "%d", device.ssh_port > 0 ? device.ssh_port : 22);
+        snprintf(prompt, sizeof(prompt), "SSH port [%s]: ", port_text);
+        {
+            char entered[16] = "";
+            if (!prompt_text(prompt, entered, sizeof(entered))) return -1;
+            if (entered[0] != '\0') snprintf(port_text, sizeof(port_text), "%s", entered);
+        }
+        errno = 0;
+        port = strtol(port_text, &end, 10);
+        if (errno != 0 || *end != '\0' || port < 1 || port > 65535) {
+            snprintf(message, sizeof(message), "Invalid SSH port: %.12s", port_text);
+            goto report;
+        }
+        device.ssh_port = (int)port;
+    }
+    snprintf(port_text, sizeof(port_text), "%d", device.ssh_port);
+    auth_log_fd = mkstemp(auth_log);
+    if (auth_log_fd >= 0) close(auth_log_fd);
+    def_prog_mode();
+    endwin();
+    fflush(NULL);
+    child = fork();
+    if (child == 0) {
+        if (auth_log_fd >= 0) close(auth_log_fd);
+        if (auth_log_fd >= 0) {
+            execlp("ssh", "ssh", "-vv", "-E", auth_log, "-t", "-p", port_text,
+                   "-l", device.ssh_user, device.ip, (char *)NULL);
+        } else {
+            execlp("ssh", "ssh", "-t", "-p", port_text, "-l", device.ssh_user, device.ip, (char *)NULL);
+        }
+        _exit(127);
+    }
+    if (child < 0) {
+        snprintf(message, sizeof(message), "Cannot start SSH for %s", device.ip);
+    } else {
+        do {
+            if (waitpid(child, &status, 0) >= 0) break;
+        } while (errno == EINTR);
+        if ((!WIFEXITED(status) || WEXITSTATUS(status) != 0) && !ssh_log_authenticated(auth_log)) {
+            snprintf(message, sizeof(message), "SSH did not complete successfully for %s; not enrolled", device.ip);
+            status = -1;
+        } else {
+            device.managed = 1;
+            device.ssh_open = 1;
+            device.online = 1;
+            device.last_ssh_success = time(NULL);
+            device.last_seen = device.last_ssh_success;
+            if (device.mac[0] == '\0') local_neighbor_mac(device.ip, device.mac, sizeof(device.mac));
+            if (db_enroll_device(state->database, &device) == 0) {
+                snprintf(message, sizeof(message), "SSH succeeded; %s enrolled as %s on port %d",
+                         device.ip, device.ssh_user, device.ssh_port);
+                status = 0;
+                pthread_mutex_lock(&state->mutex);
+                {
+                    size_t server_index;
+                    for (server_index = 0; server_index < state->config.server_count; server_index++) {
+                        if (strcmp(state->config.servers[server_index].address, device.ip) == 0) break;
+                    }
+                    if (server_index == state->config.server_count && server_index < UPTIME_MAX_SERVERS) {
+                        ServerConfig *server = &state->config.servers[server_index];
+                        ServerStatus *server_status = &state->snapshot.servers[server_index];
+                        memset(server, 0, sizeof(*server));
+                        snprintf(server->name, sizeof(server->name), "%s", device.hostname[0] ? device.hostname : device.ip);
+                        snprintf(server->address, sizeof(server->address), "%s", device.ip);
+                        snprintf(server->user, sizeof(server->user), "%s", device.ssh_user);
+                        snprintf(server->wol_mac, sizeof(server->wol_mac), "%s", device.mac);
+                        server->port = device.ssh_port;
+                        memset(server_status, 0, sizeof(*server_status));
+                        snprintf(server_status->name, sizeof(server_status->name), "%s",
+                                 device.hostname[0] ? device.hostname : device.ip);
+                        snprintf(server_status->address, sizeof(server_status->address), "%s", device.ip);
+                        snprintf(server_status->wol_mac, sizeof(server_status->wol_mac), "%s", device.mac);
+                        server_status->cpu_percent = -1.0;
+                        server_status->memory_percent = -1.0;
+                        server_status->disk_percent = -1.0;
+                        state->config.server_count++;
+                        state->snapshot.server_count = state->config.server_count;
+                    } else if (server_index < UPTIME_MAX_SERVERS) {
+                        snprintf(state->config.servers[server_index].user, sizeof(state->config.servers[server_index].user), "%s", device.ssh_user);
+                        state->config.servers[server_index].port = device.ssh_port;
+                    }
+                    for (size_t i = 0; i < state->snapshot.device_count; i++) {
+                        if (strcmp(state->snapshot.devices[i].ip, device.ip) == 0) {
+                            state->snapshot.devices[i] = device;
+                            break;
+                        }
+                    }
+                }
+                pthread_mutex_unlock(&state->mutex);
+                db_add_event(state->database, 0, message);
+            } else {
+                snprintf(message, sizeof(message), "SSH succeeded, but enrollment could not be saved for %s", device.ip);
+                status = -1;
+            }
+        }
+    }
+    if (auth_log_fd >= 0) unlink(auth_log);
+    reset_prog_mode();
+    clearok(stdscr, TRUE);
+    refresh();
+
+report:
+    pthread_mutex_lock(&state->mutex);
+    snprintf(state->snapshot.notice, sizeof(state->snapshot.notice), "%s", message);
+    pthread_mutex_unlock(&state->mutex);
+    return status;
 }
 
 int ui_run(AppState *state)
@@ -574,10 +771,25 @@ int ui_run(AppState *state)
             if ((size_t)(selected + 1) < count) selected++;
         } else if (key == 'r' || key == 'R') {
             request_scan(state);
+        } else if (screen == 4 && (key == 'p' || key == 'P')) {
+            toggle_scan_profile(state);
+        } else if (screen == 4 && key == 'x' && snapshot.scanning) {
+            request_scan(state);
         } else if (key == 'w' || key == 'W') {
             wake_server(state, &snapshot, screen, selected);
         } else if (screen == 2 && (key == '\n' || key == '\r' || key == KEY_ENTER || key == 's' || key == 'S')) {
             connect_server(state, screen, selected);
+        } else if (screen == 4 && (key == '\n' || key == '\r' || key == KEY_ENTER || key == 's' || key == 'S') &&
+                   selected >= 0 && (size_t)selected < snapshot.device_count) {
+            DeviceRecord *device = &snapshot.devices[selected];
+            int enroll_prompt = key == 's' || key == 'S';
+            if (!device->managed && !device->ssh_open && !enroll_prompt) {
+                pthread_mutex_lock(&state->mutex);
+                snprintf(state->snapshot.notice, sizeof(state->snapshot.notice), "SSH not identified; use S to enter a username and port");
+                pthread_mutex_unlock(&state->mutex);
+            } else {
+                ssh_device(state, device, enroll_prompt);
+            }
         }
     }
     endwin();

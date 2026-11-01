@@ -124,3 +124,30 @@ void local_stats_read(LocalStats *stats)
     read_load(stats->load, sizeof(stats->load));
     read_memory(stats->memory, sizeof(stats->memory));
 }
+
+int local_neighbor_mac(const char *ipv4, char *mac, size_t mac_size)
+{
+    FILE *file;
+    char line[256];
+    struct in_addr parsed;
+
+    if (mac_size == 0 || inet_pton(AF_INET, ipv4, &parsed) != 1) return 0;
+    mac[0] = '\0';
+    file = fopen("/proc/net/arp", "r");
+    if (file == NULL) return 0;
+    (void)fgets(line, sizeof(line), file);
+    while (fgets(line, sizeof(line), file) != NULL) {
+        char address[INET_ADDRSTRLEN];
+        char candidate[32];
+        unsigned int flags = 0;
+        if (sscanf(line, "%15s %*s %x %31s", address, &flags, candidate) == 3 &&
+            strcmp(address, ipv4) == 0 && (flags & 0x2U) != 0 &&
+            strcmp(candidate, "00:00:00:00:00:00") != 0) {
+            snprintf(mac, mac_size, "%s", candidate);
+            fclose(file);
+            return 1;
+        }
+    }
+    fclose(file);
+    return 0;
+}

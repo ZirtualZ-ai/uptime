@@ -21,7 +21,7 @@ long long process_monotonic_ms(void)
     return (long long)now.tv_sec * 1000LL + now.tv_nsec / 1000000LL;
 }
 
-int process_capture(char *const arguments[], unsigned int timeout_seconds, char *output, size_t output_size)
+int process_capture_cancelable(char *const arguments[], unsigned int timeout_seconds, char *output, size_t output_size, const atomic_bool *cancelled)
 {
     int pipe_fds[2];
     pid_t child;
@@ -29,6 +29,7 @@ int process_capture(char *const arguments[], unsigned int timeout_seconds, char 
     int status = 0;
     int child_done = 0;
     int output_done = 0;
+    int was_cancelled = 0;
     long long deadline = process_monotonic_ms() + (long long)timeout_seconds * 1000LL;
 
     if (output_size > 0) output[0] = '\0';
@@ -56,6 +57,14 @@ int process_capture(char *const arguments[], unsigned int timeout_seconds, char 
         struct pollfd descriptor = { .fd = pipe_fds[0], .events = POLLIN | POLLHUP };
         int wait_ms = 200;
         int polled;
+        if (!child_done && cancelled != NULL && atomic_load(cancelled)) {
+            kill(child, SIGTERM);
+            waitpid(child, &status, 0);
+            child_done = 1;
+            output_done = 1;
+            was_cancelled = 1;
+            break;
+        }
         if (!child_done && process_monotonic_ms() >= deadline) {
             kill(child, SIGKILL);
             waitpid(child, &status, 0);
@@ -102,7 +111,13 @@ int process_capture(char *const arguments[], unsigned int timeout_seconds, char 
     }
     close(pipe_fds[0]);
     if (!child_done) waitpid(child, &status, 0);
+    if (was_cancelled) return -2;
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+int process_capture(char *const arguments[], unsigned int timeout_seconds, char *output, size_t output_size)
+{
+    return process_capture_cancelable(arguments, timeout_seconds, output, output_size, NULL);
 }
 
 int process_tcp_probe(const char *host, int port, unsigned int timeout_ms)

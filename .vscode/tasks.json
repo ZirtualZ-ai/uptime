@@ -24,6 +24,136 @@
 			"type": "shell",
 			"command": "cd /tmp/uptime-gdb-worker2 && gdb --batch -ex 'set pagination off' -ex 'set exec-wrapper /lib64/ld-linux-x86-64.so.2' -ex 'break main' -ex 'break worker_main' -ex run -ex 'info threads' -ex 'print argument' -ex 'print state' -ex 'print state->database' -ex bt --args /mnt/media/Folders/Documents/Projects/C-C++/ideapad/uptime-console",
 			"problemMatcher": []
+		},
+		{
+			"label": "Temporary Uptime 0.2 build validation",
+			"type": "shell",
+			"command": "make",
+			"args": [
+				"CPPFLAGS=-D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -Isrc -I/tmp/uptime-sqlite-dev/usr/include -I/tmp/uptime-ncurses-dev/usr/include",
+				"LDFLAGS=-L/tmp/uptime-sqlite-dev/usr/lib/x86_64-linux-gnu -L/tmp/uptime-ncurses-dev/usr/lib/x86_64-linux-gnu"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Temporary Uptime 0.2 forced compile validation",
+			"type": "shell",
+			"command": "make",
+			"args": [
+				"-B",
+				"CPPFLAGS=-D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -Isrc -I/tmp/uptime-sqlite-dev/usr/include -I/tmp/uptime-ncurses-dev/usr/include",
+				"LDFLAGS=-L/tmp/uptime-sqlite-dev/usr/lib/x86_64-linux-gnu -L/tmp/uptime-ncurses-dev/usr/lib/x86_64-linux-gnu"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Temporary Uptime 0.2 forced compile validation",
+			"type": "shell",
+			"command": "make",
+			"args": [
+				"-B",
+				"CPPFLAGS=-D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -Isrc -I/tmp/uptime-sqlite-dev/usr/include -I/tmp/uptime-ncurses-dev/usr/include",
+				"LDFLAGS=-L/tmp/uptime-sqlite-dev/usr/lib/x86_64-linux-gnu -L/tmp/uptime-ncurses-dev/usr/lib/x86_64-linux-gnu"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Temporary Uptime 0.2 forced compile validation",
+			"type": "shell",
+			"command": "make",
+			"args": [
+				"-B",
+				"CPPFLAGS=-D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -Isrc -I/tmp/uptime-sqlite-dev/usr/include -I/tmp/uptime-ncurses-dev/usr/include",
+				"LDFLAGS=-L/tmp/uptime-sqlite-dev/usr/lib/x86_64-linux-gnu -L/tmp/uptime-ncurses-dev/usr/lib/x86_64-linux-gnu"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Temporary Uptime 0.2 forced compile validation",
+			"type": "shell",
+			"command": "make",
+			"args": [
+				"-B",
+				"CPPFLAGS=-D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -Isrc -I/tmp/uptime-sqlite-dev/usr/include -I/tmp/uptime-ncurses-dev/usr/include",
+				"LDFLAGS=-L/tmp/uptime-sqlite-dev/usr/lib/x86_64-linux-gnu -L/tmp/uptime-ncurses-dev/usr/lib/x86_64-linux-gnu"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Temporary Uptime v1 migration fixture",
+			"type": "shell",
+			"command": "python3",
+			"args": [
+				"-c",
+				"import sqlite3; p='/tmp/uptime-v1-migration.db'; d=sqlite3.connect(p); d.execute(\"CREATE TABLE devices(ip TEXT PRIMARY KEY, hostname TEXT NOT NULL DEFAULT '', mac TEXT NOT NULL DEFAULT '', vendor TEXT NOT NULL DEFAULT '', first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL, online INTEGER NOT NULL DEFAULT 0)\"); d.execute(\"INSERT INTO devices(ip,hostname,mac,vendor,first_seen,last_seen,online) VALUES('192.168.40.50','legacy-host','AA:BB:CC:DD:EE:FF','vendor',1,2,1)\"); d.execute('PRAGMA user_version=1'); d.commit(); d.close()"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Temporary Uptime v1 migration fixture",
+			"type": "shell",
+			"command": "python3",
+			"args": [
+				"-c",
+				"import sqlite3; p=\"/tmp/uptime-v1-migration.db\"; d=sqlite3.connect(p); d.execute(\"CREATE TABLE devices(ip TEXT PRIMARY KEY, hostname TEXT, mac TEXT, vendor TEXT, first_seen INTEGER, last_seen INTEGER, online INTEGER)\"); d.execute(\"INSERT INTO devices VALUES(?,?,?,?,?,?,?)\",(\"192.168.40.50\",\"legacy-host\",\"AA:BB:CC:DD:EE:FF\",\"vendor\",1,2,1)); d.execute(\"PRAGMA user_version=1\"); d.commit(); d.close()"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Temporary Uptime v1 migration fixture retry",
+			"type": "shell",
+			"command": "python3",
+			"args": [
+				"-c",
+				"import sqlite3; p=\"/tmp/uptime-v1-migration.db\"; d=sqlite3.connect(p); d.execute(\"CREATE TABLE devices(ip TEXT PRIMARY KEY, hostname TEXT, mac TEXT, vendor TEXT, first_seen INTEGER, last_seen INTEGER, online INTEGER)\"); d.execute(\"INSERT INTO devices VALUES(?,?,?,?,?,?,?)\",(\"192.168.40.50\",\"legacy-host\",\"AA:BB:CC:DD:EE:FF\",\"vendor\",1,2,1)); d.execute(\"PRAGMA user_version=1\"); d.commit(); d.close()"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Temporary Uptime schema migration run",
+			"type": "shell",
+			"command": "/lib64/ld-linux-x86-64.so.2",
+			"args": [
+				"/mnt/media/Folders/Documents/Projects/C-C++/ideapad/uptime-console",
+				"--init-db",
+				"/tmp/uptime-v1-migration.db"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Temporary Uptime schema migration verify",
+			"type": "shell",
+			"command": "python3",
+			"args": [
+				"-c",
+				"import sqlite3; d=sqlite3.connect(\"/tmp/uptime-v1-migration.db\"); version=d.execute(\"PRAGMA user_version\").fetchone()[0]; row=d.execute(\"SELECT hostname,mac,managed,ports_known FROM devices WHERE ip=?\",(\"192.168.40.50\",)).fetchone(); assert version==2, version; assert row==(\"legacy-host\",\"AA:BB:CC:DD:EE:FF\",0,0), row; print(\"schema\",version,\"retained\",row)"
+			],
+			"isBackground": false,
+			"problemMatcher": []
 		}
 	]
 }

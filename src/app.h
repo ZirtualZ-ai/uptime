@@ -5,6 +5,7 @@
 
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <sqlite3.h>
 #include <stddef.h>
 #include <time.h>
@@ -17,6 +18,11 @@
 #define UPTIME_ADDRESS 256
 #define UPTIME_PATH 512
 #define UPTIME_DETAIL 256
+
+typedef enum {
+    SCAN_PROFILE_DISCOVERY,
+    SCAN_PROFILE_STANDARD
+} ScanProfile;
 
 typedef struct {
     char name[UPTIME_NAME];
@@ -42,6 +48,10 @@ typedef struct {
     char database[UPTIME_PATH];
     unsigned int scan_interval;
     unsigned int monitor_interval;
+    unsigned int scan_timeout;
+    unsigned int scan_max_rate;
+    unsigned int scan_max_retries;
+    ScanProfile scan_profile;
     int scan_enabled;
     size_t server_count;
     size_t service_count;
@@ -84,8 +94,15 @@ typedef struct {
     char hostname[UPTIME_NAME];
     char mac[32];
     char vendor[UPTIME_NAME];
+    char open_ports[UPTIME_DETAIL];
+    char ssh_user[UPTIME_NAME];
+    int ssh_port;
+    int ssh_open;
+    int ports_known;
+    int managed;
     time_t first_seen;
     time_t last_seen;
+    time_t last_ssh_success;
     int online;
 } DeviceRecord;
 
@@ -124,6 +141,7 @@ typedef struct {
     pthread_cond_t condition;
     int stopping;
     int scan_requested;
+    atomic_bool scan_cancelled;
 } AppState;
 
 #endif

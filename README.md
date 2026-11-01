@@ -7,7 +7,8 @@ Uptime is a small C11/ncurses operations console for a homelab station. It runs 
 - Seven keyboard-operated views: overview, servers, services, discovery, device history, events, and configuration.
 - Local IPv4, uptime, load average, and memory use from Linux interfaces and `/proc`.
 - Configurable ping and key-authenticated SSH checks, with CPU, memory, disk, uptime, and optional thermal readings.
-- Nmap host discovery only (`-sn`); the sole target is the configured IPv4 CIDR. No port scans are launched.
+- Nmap host discovery (`-sn`) is always limited to the configured IPv4 CIDR.
+- Optional standard profile checks a fixed list of common TCP ports only on discovered hosts in the configured `/16` through `/32` subnet. Full-range and service-version probing are not enabled.
 - Device first-seen/last-seen, MAC, manufacturer (when Nmap can obtain it), online state, and scan history in SQLite.
 - TCP and HTTP/HTTPS service checks, response times, failure counts, and transition events.
 - UDP Wake-on-LAN magic packets; sending a packet is reported separately from confirming that the host booted.
@@ -48,7 +49,7 @@ make install
 /usr/local/bin/uptime-console --version
 ```
 
-The version should report `Uptime 0.1.2`. In GDB, set breakpoints on the `pthread_create` call in `main` and `worker_main` and verify the `state` pointer immediately before creation matches the worker's `argument`.
+The version should report `Uptime 0.2.0`. In GDB, set breakpoints on the `pthread_create` call in `main` and `worker_main` and verify the `state` pointer immediately before creation matches the worker's `argument`.
 
 Start it manually from a terminal when not using the Alpine TTY1 setup:
 
@@ -114,6 +115,8 @@ The supported sections are `[global]`, `[server NAME]`, and `[service NAME]`. Gl
 
 Server settings are `address`, `user`, `port`, and optional `wol_mac`/`broadcast`. SSH uses `BatchMode=yes`, a connection timeout, and the user's SSH keys; no password is requested or stored. Set up and test key access as the monitoring account, for example `ssh -o BatchMode=yes -p 22 marshal@192.168.40.10 true`.
 
+Global scan settings include `scan_profile` (`discovery` or `standard`), `scan_timeout` (10 to 600 seconds), `scan_max_rate` (1 to 200 packets per second), and `scan_max_retries` (0 to 3). The default `discovery` profile performs host discovery only. `standard` adds a fixed common-TCP-port check on hosts found in that discovery pass. The Discovery view's `P` key switches profiles for the current run; `R` starts a scan, and `R` again while scanning requests cancellation. The UI also accepts `X` to stop. Scans are restricted to configured IPv4 prefixes `/16` through `/32`; there is no all-port or version-detection mode.
+
 Service settings are `server`, `type` (`tcp`, `http`, or `https`), `target`, `port`, optional `expected_status`, and `interval`. TCP targets are hostnames or IPs and use `port`. HTTP(S) targets are complete URLs; the URL determines the actual HTTP port. `expected_status` defaults to 200; set it to `0` to accept any 2xx or 3xx response. HTTP checks use `curl` with certificate verification enabled.
 
 Validate or generate a config without entering the UI:
@@ -138,12 +141,14 @@ The database is created on first launch. Health samples older than 30 days, even
 | `6` | Events |
 | `7` | Configuration |
 | `Up` / `Down`, `k` / `j` | Select a row |
-| `Enter` / `S` | SSH to the selected managed server on the Servers view |
+| `Enter` / `S` | Connect to the selected managed server in Servers, or a discovered device in Discovery; prompts for missing SSH identity and enrolls successful connections |
 | `W` | Send Wake-on-LAN to the selected server on the Servers view |
 | `R` | Queue a network discovery scan |
+| `P` | Toggle Discovery / Standard scan profile in the Discovery view |
+| `X` | Stop the active scan in the Discovery view |
 | `Q` | Quit |
 
-SSH connections are launched with the system `ssh` client and an interactive terminal; the ncurses screen is suspended for the session and restored when it exits. Configured address, user, and port are used, while the operating system's SSH keys, `known_hosts`, and SSH client configuration remain in effect. Discovered-only devices are labeled `DISCOVERED` and are not assumed to accept SSH. Nmap scans run on the worker thread and have a 120-second timeout. Server and service checks share that background worker; a long scan can delay their next scheduled check, but does not block terminal input. Server statistics use one SSH connection per configured monitoring interval, with a one-second remote CPU sampling window. Health history is persisted on first observation, state changes, and at most every 15 minutes while stable to reduce disk writes.
+SSH connections are launched with the system `ssh` client and an interactive terminal; the ncurses screen is suspended for the session and restored when it exits. Configured address, user, and port are used, while the operating system's SSH keys, `known_hosts`, and SSH client configuration remain in effect. Discovered-only devices are not assumed to accept SSH. A successful interactive connection enrolls the host in SQLite; managed devices return to the Servers list after restart. Private keys and passwords are never stored. Nmap scans run on the worker thread and can be cancelled. Server and service checks share that background worker; a long scan can delay their next scheduled check, but does not block terminal input. Server statistics use one SSH connection per configured monitoring interval, with a one-second remote CPU sampling window. Health history is persisted on first observation, state changes, and at most every 15 minutes while stable to reduce disk writes.
 
 ## Project Layout
 

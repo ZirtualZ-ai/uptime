@@ -16,5 +16,9 @@ int db_begin_scan(sqlite3 *database, sqlite3_int64 *scan_id);
 int db_finish_scan(sqlite3 *database, sqlite3_int64 scan_id, int success, size_t device_count);
 int db_mark_devices_offline(sqlite3 *database);
 int db_upsert_device(sqlite3 *database, const DeviceRecord *device, int *was_new, int *was_offline);
+int db_enroll_device(sqlite3 *database, const DeviceRecord *device);
+int db_mark_ssh_success(sqlite3 *database, const char *ip);
+int db_reset_scan_ports(sqlite3 *database);
+int db_update_device_ports(sqlite3 *database, const char *ip, const char *ports, int ssh_open, int ssh_port);
 
 #endif

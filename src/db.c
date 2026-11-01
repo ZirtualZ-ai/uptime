@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define DB_SCHEMA_VERSION 1
+#define DB_SCHEMA_VERSION 2
 
 static const char schema_sql[] =
     "CREATE TABLE IF NOT EXISTS devices ("
@@ -42,7 +42,16 @@ int db_open(sqlite3 **database, const char *path, char *error, size_t error_size
     }
     if (sqlite3_exec(*database, "BEGIN IMMEDIATE", NULL, NULL, &message) != SQLITE_OK ||
         sqlite3_exec(*database, schema_sql, NULL, NULL, &message) != SQLITE_OK ||
-        sqlite3_exec(*database, "PRAGMA user_version=1; COMMIT", NULL, NULL, &message) != SQLITE_OK) {
+        (version < 2 && sqlite3_exec(*database,
+            "ALTER TABLE devices ADD COLUMN open_ports TEXT NOT NULL DEFAULT '';"
+            "ALTER TABLE devices ADD COLUMN ssh_user TEXT NOT NULL DEFAULT '';"
+            "ALTER TABLE devices ADD COLUMN ssh_port INTEGER NOT NULL DEFAULT 0;"
+            "ALTER TABLE devices ADD COLUMN ssh_open INTEGER NOT NULL DEFAULT 0;"
+            "ALTER TABLE devices ADD COLUMN ports_known INTEGER NOT NULL DEFAULT 0;"
+            "ALTER TABLE devices ADD COLUMN managed INTEGER NOT NULL DEFAULT 0;"
+            "ALTER TABLE devices ADD COLUMN last_ssh_success INTEGER NOT NULL DEFAULT 0;",
+            NULL, NULL, &message) != SQLITE_OK) ||
+        sqlite3_exec(*database, "PRAGMA user_version=2; COMMIT", NULL, NULL, &message) != SQLITE_OK) {
         snprintf(error, error_size, "SQLite migration: %s", message != NULL ? message : sqlite3_errmsg(*database));
         sqlite3_free(message);
         sqlite3_exec(*database, "ROLLBACK", NULL, NULL, NULL);
@@ -67,7 +76,7 @@ int db_load_devices(sqlite3 *database, AppSnapshot *snapshot)
     int result;
     snapshot->device_count = 0;
     snapshot->online_devices = 0;
-    if (sqlite3_prepare_v2(database, "SELECT ip,hostname,mac,vendor,first_seen,last_seen,online FROM devices ORDER BY online DESC,last_seen DESC LIMIT ?", -1, &statement, NULL) != SQLITE_OK) return -1;
+    if (sqlite3_prepare_v2(database, "SELECT ip,hostname,mac,vendor,open_ports,ssh_user,ssh_port,ssh_open,ports_known,managed,first_seen,last_seen,last_ssh_success,online FROM devices ORDER BY managed DESC,online DESC,last_seen DESC LIMIT ?", -1, &statement, NULL) != SQLITE_OK) return -1;
     sqlite3_bind_int(statement, 1, UPTIME_MAX_DEVICES);
     while ((result = sqlite3_step(statement)) == SQLITE_ROW && snapshot->device_count < UPTIME_MAX_DEVICES) {
         DeviceRecord *device = &snapshot->devices[snapshot->device_count++];
@@ -75,9 +84,16 @@ int db_load_devices(sqlite3 *database, AppSnapshot *snapshot)
         snprintf(device->hostname, sizeof(device->hostname), "%s", sqlite3_column_text(statement, 1));
         snprintf(device->mac, sizeof(device->mac), "%s", sqlite3_column_text(statement, 2));
         snprintf(device->vendor, sizeof(device->vendor), "%s", sqlite3_column_text(statement, 3));
-        device->first_seen = (time_t)sqlite3_column_int64(statement, 4);
-        device->last_seen = (time_t)sqlite3_column_int64(statement, 5);
-        device->online = sqlite3_column_int(statement, 6);
+        snprintf(device->open_ports, sizeof(device->open_ports), "%s", sqlite3_column_text(statement, 4));
+        snprintf(device->ssh_user, sizeof(device->ssh_user), "%s", sqlite3_column_text(statement, 5));
+        device->ssh_port = sqlite3_column_int(statement, 6);
+        device->ssh_open = sqlite3_column_int(statement, 7);
+        device->ports_known = sqlite3_column_int(statement, 8);
+        device->managed = sqlite3_column_int(statement, 9);
+        device->first_seen = (time_t)sqlite3_column_int64(statement, 10);
+        device->last_seen = (time_t)sqlite3_column_int64(statement, 11);
+        device->last_ssh_success = (time_t)sqlite3_column_int64(statement, 12);
+        device->online = sqlite3_column_int(statement, 13);
         if (device->online) snapshot->online_devices++;
     }
     sqlite3_finalize(statement);
@@ -216,16 +232,86 @@ int db_upsert_device(sqlite3 *database, const DeviceRecord *device, int *was_new
     sqlite3_finalize(statement);
     *was_new = !exists;
     statement = NULL;
-    if (sqlite3_prepare_v2(database, "INSERT INTO devices(ip,hostname,mac,vendor,first_seen,last_seen,online) VALUES(?,?,?,?,?,?,1) ON CONFLICT(ip) DO UPDATE SET hostname=CASE WHEN excluded.hostname='' THEN devices.hostname ELSE excluded.hostname END,mac=CASE WHEN excluded.mac='' THEN devices.mac ELSE excluded.mac END,vendor=CASE WHEN excluded.vendor='' THEN devices.vendor ELSE excluded.vendor END,last_seen=excluded.last_seen,online=1", -1, &statement, NULL) != SQLITE_OK) return -1;
+    if (sqlite3_prepare_v2(database, "INSERT INTO devices(ip,hostname,mac,vendor,open_ports,ssh_open,first_seen,last_seen,online) VALUES(?,?,?,?,?,?, ?,?,1) ON CONFLICT(ip) DO UPDATE SET hostname=CASE WHEN excluded.hostname='' THEN devices.hostname ELSE excluded.hostname END,mac=CASE WHEN excluded.mac='' THEN devices.mac ELSE excluded.mac END,vendor=CASE WHEN excluded.vendor='' THEN devices.vendor ELSE excluded.vendor END,open_ports=CASE WHEN excluded.open_ports='' THEN devices.open_ports ELSE excluded.open_ports END,ssh_open=CASE WHEN excluded.open_ports='' THEN devices.ssh_open ELSE excluded.ssh_open END,last_seen=excluded.last_seen,online=1", -1, &statement, NULL) != SQLITE_OK) return -1;
     sqlite3_bind_text(statement, 1, device->ip, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(statement, 2, device->hostname, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(statement, 3, device->mac, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(statement, 4, device->vendor, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(statement, 5, (sqlite3_int64)time(NULL));
-    sqlite3_bind_int64(statement, 6, (sqlite3_int64)time(NULL));
+    sqlite3_bind_text(statement, 5, device->open_ports, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(statement, 6, device->ssh_open);
+    sqlite3_bind_int64(statement, 7, (sqlite3_int64)time(NULL));
+    sqlite3_bind_int64(statement, 8, (sqlite3_int64)time(NULL));
     {
         int ok = sqlite3_step(statement) == SQLITE_DONE;
         sqlite3_finalize(statement);
         return ok ? 0 : -1;
     }
+}
+
+int db_enroll_device(sqlite3 *database, const DeviceRecord *device)
+{
+    sqlite3_stmt *statement = NULL;
+    const char *sql = "INSERT INTO devices(ip,hostname,mac,vendor,open_ports,ssh_user,ssh_port,ssh_open,managed,first_seen,last_seen,last_ssh_success,online) "
+                      "VALUES(?,?,?,?,?,?,?,?,1,?,?,?,1) ON CONFLICT(ip) DO UPDATE SET "
+                      "hostname=CASE WHEN excluded.hostname='' THEN devices.hostname ELSE excluded.hostname END,"
+                      "mac=CASE WHEN excluded.mac='' THEN devices.mac ELSE excluded.mac END,"
+                      "vendor=CASE WHEN excluded.vendor='' THEN devices.vendor ELSE excluded.vendor END,"
+                      "ssh_user=excluded.ssh_user,ssh_port=excluded.ssh_port,ssh_open=1,managed=1,"
+                      "last_seen=excluded.last_seen,last_ssh_success=excluded.last_ssh_success,online=1";
+    int ok = sqlite3_prepare_v2(database, sql, -1, &statement, NULL) == SQLITE_OK;
+
+    if (ok) {
+        sqlite3_int64 now = (sqlite3_int64)time(NULL);
+        sqlite3_bind_text(statement, 1, device->ip, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(statement, 2, device->hostname, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(statement, 3, device->mac, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(statement, 4, device->vendor, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(statement, 5, device->open_ports, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(statement, 6, device->ssh_user, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(statement, 7, device->ssh_port);
+        sqlite3_bind_int(statement, 8, 1);
+        sqlite3_bind_int64(statement, 9, now);
+        sqlite3_bind_int64(statement, 10, now);
+        sqlite3_bind_int64(statement, 11, now);
+        ok = sqlite3_step(statement) == SQLITE_DONE;
+    }
+    sqlite3_finalize(statement);
+    return ok ? 0 : -1;
+}
+
+int db_mark_ssh_success(sqlite3 *database, const char *ip)
+{
+    sqlite3_stmt *statement = NULL;
+    int ok = sqlite3_prepare_v2(database,
+        "UPDATE devices SET last_ssh_success=?,last_seen=?,online=1 WHERE ip=?", -1, &statement, NULL) == SQLITE_OK;
+    if (ok) {
+        sqlite3_int64 now = (sqlite3_int64)time(NULL);
+        sqlite3_bind_int64(statement, 1, now);
+        sqlite3_bind_int64(statement, 2, now);
+        sqlite3_bind_text(statement, 3, ip, -1, SQLITE_TRANSIENT);
+        ok = sqlite3_step(statement) == SQLITE_DONE;
+    }
+    sqlite3_finalize(statement);
+    return ok ? 0 : -1;
+}
+
+int db_reset_scan_ports(sqlite3 *database)
+{
+    return sqlite3_exec(database, "UPDATE devices SET open_ports='',ssh_open=0,ports_known=1,ssh_port=CASE WHEN managed=1 THEN ssh_port ELSE 0 END WHERE online=1", NULL, NULL, NULL) == SQLITE_OK ? 0 : -1;
+}
+
+int db_update_device_ports(sqlite3 *database, const char *ip, const char *ports, int ssh_open, int ssh_port)
+{
+    sqlite3_stmt *statement = NULL;
+    int ok = sqlite3_prepare_v2(database,
+        "UPDATE devices SET open_ports=?,ssh_open=?,ssh_port=?,ports_known=1 WHERE ip=?", -1, &statement, NULL) == SQLITE_OK;
+    if (ok) {
+        sqlite3_bind_text(statement, 1, ports, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(statement, 2, ssh_open);
+        sqlite3_bind_int(statement, 3, ssh_port);
+        sqlite3_bind_text(statement, 4, ip, -1, SQLITE_TRANSIENT);
+        ok = sqlite3_step(statement) == SQLITE_DONE;
+    }
+    sqlite3_finalize(statement);
+    return ok ? 0 : -1;
 }

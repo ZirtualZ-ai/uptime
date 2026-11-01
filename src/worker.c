@@ -14,6 +14,7 @@
 #include <sys/wait.h>
 
 #define SCAN_OUTPUT_SIZE 65536
+#define STANDARD_PORTS "22,80,443,3000,3306,3389,5000,5900,6379,7681,8000,8080,8443,9000,9090,11434,25565"
 #define OFFLINE_CONFIRMATIONS 3
 #define WOL_COOLDOWN_SECONDS 300
 
@@ -100,8 +101,10 @@ static void get_wol_broadcast(const AppConfig *configuration,
     uint32_t network;
 
     if (server->broadcast[0] != '\0') {
-        snprintf(output, output_size, "%s", server->broadcast);
-        return;
+        struct in_addr configured;
+        if (inet_pton(AF_INET, server->broadcast, &configured) == 1) {
+            if (inet_ntop(AF_INET, &configured, output, output_size) != NULL) return;
+        }
     }
     snprintf(subnet, sizeof(subnet), "%s", configuration->subnet);
     slash = strchr(subnet, '/');
@@ -144,7 +147,8 @@ static void check_server(AppState *state, sqlite3 *database, size_t index)
         "printf 'uptime='; cut -d. -f1 /proc/uptime; "
         "for f in /sys/class/thermal/thermal_zone*/temp; do if test -r \"$f\"; then "
         "awk '{if($1>1000)printf \"temperature=%.1fC\\n\",$1/1000;else printf \"temperature=%sC\\n\",$1}' \"$f\"; break; fi; done";
-    const ServerConfig *configuration = &state->config.servers[index];
+    ServerConfig configuration_copy;
+    const ServerConfig *configuration = &configuration_copy;
     ServerStatus previous;
     ServerStatus current;
     char output[4096];
@@ -156,19 +160,30 @@ static void check_server(AppState *state, sqlite3 *database, size_t index)
     size_t argument = 0;
 
     pthread_mutex_lock(&state->mutex);
+    configuration_copy = state->config.servers[index];
     previous = state->snapshot.servers[index];
     pthread_mutex_unlock(&state->mutex);
     current = previous;
     current.ping_ok = process_capture(ping_arguments, 4, output, sizeof(output)) == 0;
     current.ping_failures = current.ping_ok ? 0 : current.ping_failures + 1;
-    snprintf(destination, sizeof(destination), "%s@%s", configuration->user, previous.address);
+    {
+        size_t user_length = strnlen(configuration->user, sizeof(configuration->user));
+        size_t address_length = strnlen(previous.address, sizeof(previous.address));
+        size_t available = sizeof(destination) - 1;
+        if (user_length > available) user_length = available;
+        memcpy(destination, configuration->user, user_length);
+        if (user_length < available) destination[user_length++] = '@';
+        if (address_length > available - user_length) address_length = available - user_length;
+        memcpy(destination + user_length, previous.address, address_length);
+        destination[user_length + address_length] = '\0';
+    }
     snprintf(port, sizeof(port), "%d", configuration->port);
     ssh_arguments[argument++] = "ssh";
     ssh_arguments[argument++] = "-n";
     ssh_arguments[argument++] = "-oBatchMode=yes";
     ssh_arguments[argument++] = "-oConnectTimeout=5";
     ssh_arguments[argument++] = "-oConnectionAttempts=1";
-    ssh_arguments[argument++] = "-oStrictHostKeyChecking=accept-new";
+    ssh_arguments[argument++] = "-oStrictHostKeyChecking=yes";
     ssh_arguments[argument++] = "-p";
     ssh_arguments[argument++] = port;
     ssh_arguments[argument++] = destination;
@@ -185,7 +200,7 @@ static void check_server(AppState *state, sqlite3 *database, size_t index)
         (current.ping_ok && !previous.ping_ok && previous.ping_failures >= OFFLINE_CONFIRMATIONS) ||
         (!current.ping_ok && current.ping_failures == OFFLINE_CONFIRMATIONS)) {
         char message[UPTIME_DETAIL];
-        snprintf(message, sizeof(message), "%s is %s", configuration->name, current.ping_ok ? "reachable" : "offline");
+        snprintf(message, sizeof(message), "%.60s is %s", configuration->name, current.ping_ok ? "reachable" : "offline");
         add_event(state, database, current.ping_ok ? 0 : 2, message);
     }
 
@@ -197,10 +212,10 @@ static void check_server(AppState *state, sqlite3 *database, size_t index)
         get_wol_broadcast(&state->config, configuration, broadcast, sizeof(broadcast));
         current.last_wol_at = current.checked_at;
         if (wol_send(current.wol_mac, broadcast) == 0) {
-            snprintf(message, sizeof(message), "%s is offline; Wake-on-LAN packet sent", configuration->name);
+            snprintf(message, sizeof(message), "%.60s is offline; Wake-on-LAN packet sent", configuration->name);
             add_event(state, database, 1, message);
         } else {
-            snprintf(message, sizeof(message), "%s is offline; Wake-on-LAN send failed", configuration->name);
+            snprintf(message, sizeof(message), "%.60s is offline; Wake-on-LAN send failed", configuration->name);
             add_event(state, database, 2, message);
         }
     }
@@ -208,7 +223,7 @@ static void check_server(AppState *state, sqlite3 *database, size_t index)
     if ((previous.checked_at == 0 && !current.ssh_ok) ||
         (previous.checked_at != 0 && previous.ssh_ok != current.ssh_ok)) {
         char message[UPTIME_DETAIL];
-        snprintf(message, sizeof(message), "%s SSH %s", configuration->name, current.ssh_ok ? "recovered" : "failed");
+        snprintf(message, sizeof(message), "%.60s SSH %s", configuration->name, current.ssh_ok ? "recovered" : "failed");
         add_event(state, database, current.ssh_ok ? 0 : 2, message);
     }
     if (database != NULL && (previous.checked_at == 0 || previous.ping_ok != current.ping_ok ||
@@ -266,6 +281,90 @@ static int parse_nmap_line(char *line, DeviceRecord *device)
     return 1;
 }
 
+static int parse_grepable_ports(char *line, char *ip, size_t ip_size,
+                                char *ports, size_t ports_size, int *ssh_port)
+{
+    char *host = strstr(line, "Host: ");
+    char *port_list = strstr(line, "Ports: ");
+    char *token;
+    char *save;
+    size_t used = 0;
+
+    (void)ip_size;
+    if (host == NULL || port_list == NULL || sscanf(host + 6, "%15s", ip) != 1) return 0;
+    port_list += 7;
+    *ssh_port = 0;
+    ports[0] = '\0';
+    for (token = strtok_r(port_list, ",", &save); token != NULL; token = strtok_r(NULL, ",", &save)) {
+        int port = 0;
+        char state[16] = "";
+        char *start = token;
+        while (*start == ' ') start++;
+        if (sscanf(start, "%d/%15[^/]", &port, state) != 2 || strcmp(state, "open") != 0) continue;
+        {
+            char port_text[8];
+            size_t port_length;
+            snprintf(port_text, sizeof(port_text), "%d", port);
+            port_length = strlen(port_text);
+            if (used + (used > 0 ? 1 : 0) + port_length >= ports_size) continue;
+            if (used > 0) ports[used++] = ',';
+            memcpy(ports + used, port_text, port_length + 1);
+            used += port_length;
+        }
+        if (port == 22 || port == 2200 || port == 2222 || port == 22222) *ssh_port = port;
+    }
+    return 1;
+}
+
+static int perform_standard_port_scan(AppState *state, sqlite3 *database, const char *targets)
+{
+    char timeout_text[16];
+    char rate_text[16];
+    char retries_text[16];
+    char host_timeout[24];
+    char *arguments[] = { "nmap", "-n", "-sT", "-Pn", "--open", "-p", STANDARD_PORTS,
+                          "--max-rate", rate_text, "--max-retries", retries_text,
+                          "--host-timeout", host_timeout, "-oG", "-", (char *)targets, NULL };
+    char *output = malloc(SCAN_OUTPUT_SIZE);
+    char *line;
+    char *save;
+    int result;
+
+    snprintf(rate_text, sizeof(rate_text), "%u", state->config.scan_max_rate);
+    snprintf(retries_text, sizeof(retries_text), "%u", state->config.scan_max_retries);
+    snprintf(timeout_text, sizeof(timeout_text), "%u", state->config.scan_timeout);
+    snprintf(host_timeout, sizeof(host_timeout), "%ss", timeout_text);
+    pthread_mutex_lock(&state->mutex);
+    snprintf(state->snapshot.scan_message, sizeof(state->snapshot.scan_message), "Scanning common TCP ports on %s", state->config.subnet);
+    pthread_mutex_unlock(&state->mutex);
+    if (output == NULL) return -1;
+    result = process_capture_cancelable(arguments, state->config.scan_timeout, output, SCAN_OUTPUT_SIZE,
+                                        &state->scan_cancelled);
+    if (result == 0 && database != NULL) {
+        db_reset_scan_ports(database);
+        for (line = strtok_r(output, "\n", &save); line != NULL; line = strtok_r(NULL, "\n", &save)) {
+            char address[INET_ADDRSTRLEN];
+            char ports[UPTIME_DETAIL];
+            int ssh_port;
+            if (parse_grepable_ports(line, address, sizeof(address), ports, sizeof(ports), &ssh_port)) {
+                db_update_device_ports(database, address, ports, ssh_port != 0, ssh_port);
+            }
+        }
+    }
+    free(output);
+    return result;
+}
+
+static int scan_subnet_is_bounded(const char *subnet)
+{
+    const char *slash = strchr(subnet, '/');
+    char *end;
+    unsigned long prefix;
+    if (slash == NULL) return 0;
+    prefix = strtoul(slash + 1, &end, 10);
+    return *end == '\0' && prefix >= 16 && prefix <= 32;
+}
+
 static int previously_online(AppState *state, const char *ip, int *known)
 {
     int online = 0;
@@ -284,7 +383,10 @@ static int previously_online(AppState *state, const char *ip, int *known)
 
 static void perform_scan(AppState *state, sqlite3 *database)
 {
-    char *arguments[] = { "nmap", "-sn", "-oG", "-", state->config.subnet, NULL };
+    char rate_text[16];
+    char retries_text[16];
+    char *arguments[] = { "nmap", "-sn", "--max-rate", rate_text, "--max-retries", retries_text,
+                          "-oG", "-", state->config.subnet, NULL };
     char *output = malloc(SCAN_OUTPUT_SIZE);
     char *line;
     char *save;
@@ -295,9 +397,22 @@ static void perform_scan(AppState *state, sqlite3 *database)
     size_t seen_count = 0;
     char previously_online_ips[UPTIME_MAX_DEVICES][INET_ADDRSTRLEN];
     size_t previously_online_count = 0;
+    char scan_targets[UPTIME_MAX_DEVICES * (INET_ADDRSTRLEN + 1)];
+    size_t targets_used = 0;
+    ScanProfile scan_profile;
+    int port_scan_failed = 0;
     int result;
 
+    if (!scan_subnet_is_bounded(state->config.subnet)) {
+        set_notice(state, "Scanning is limited to configured IPv4 subnets /16 through /32");
+        return;
+    }
+    atomic_store(&state->scan_cancelled, 0);
+    snprintf(rate_text, sizeof(rate_text), "%u", state->config.scan_max_rate);
+    snprintf(retries_text, sizeof(retries_text), "%u", state->config.scan_max_retries);
+
     pthread_mutex_lock(&state->mutex);
+    scan_profile = state->config.scan_profile;
     for (size_t i = 0; i < state->snapshot.device_count && previously_online_count < UPTIME_MAX_DEVICES; i++) {
         if (state->snapshot.devices[i].online) {
             snprintf(previously_online_ips[previously_online_count++], INET_ADDRSTRLEN,
@@ -309,11 +424,12 @@ static void perform_scan(AppState *state, sqlite3 *database)
     pthread_mutex_unlock(&state->mutex);
     if (database != NULL) db_begin_scan(database, &scan_id);
     if (output == NULL) result = -1;
-    else result = process_capture(arguments, 120, output, SCAN_OUTPUT_SIZE);
+    else result = process_capture_cancelable(arguments, state->config.scan_timeout, output, SCAN_OUTPUT_SIZE,
+                                             &state->scan_cancelled);
     if (result != 0) {
         if (database != NULL) db_finish_scan(database, scan_id, 0, 0);
-        snprintf(message, sizeof(message), "Network scan failed (Nmap missing or timed out)");
-        add_event(state, database, 2, message);
+        snprintf(message, sizeof(message), "%s", result == -2 ? "Network scan cancelled" : "Network scan failed (Nmap missing or timed out)");
+        if (result != -2) add_event(state, database, 2, message);
         set_notice(state, message);
         pthread_mutex_lock(&state->mutex);
         state->snapshot.scanning = 0;
@@ -329,6 +445,7 @@ static void perform_scan(AppState *state, sqlite3 *database)
     for (line = strtok_r(output, "\n", &save); line != NULL; line = strtok_r(NULL, "\n", &save)) {
         DeviceRecord device;
         if (!parse_nmap_line(line, &device)) continue;
+        if (device.mac[0] == '\0') local_neighbor_mac(device.ip, device.mac, sizeof(device.mac));
         learn_server_identity(state, &device);
         int known;
         int online_before = previously_online(state, device.ip, &known);
@@ -350,6 +467,32 @@ static void perform_scan(AppState *state, sqlite3 *database)
             add_event(state, database, known ? 0 : 1, message);
         }
         count++;
+    }
+    if (scan_profile == SCAN_PROFILE_STANDARD) {
+        int port_result = 0;
+        scan_targets[0] = '\0';
+        for (size_t i = 0; i < seen_count && targets_used < sizeof(scan_targets); i++) {
+            int written = snprintf(scan_targets + targets_used, sizeof(scan_targets) - targets_used,
+                                   "%s%s", targets_used == 0 ? "" : ",", seen[i]);
+            if (written < 0 || (size_t)written >= sizeof(scan_targets) - targets_used) break;
+            targets_used += (size_t)written;
+        }
+        if (targets_used > 0) port_result = perform_standard_port_scan(state, database, scan_targets);
+        if (port_result == -2) {
+            snprintf(message, sizeof(message), "Network scan cancelled");
+            if (database != NULL) db_finish_scan(database, scan_id, 0, count);
+            pthread_mutex_lock(&state->mutex);
+            if (database != NULL) db_load_devices(database, &state->snapshot);
+            state->snapshot.scanning = 0;
+            snprintf(state->snapshot.scan_message, sizeof(state->snapshot.scan_message), "%s", message);
+            pthread_mutex_unlock(&state->mutex);
+            free(output);
+            return;
+        }
+        if (port_result != 0) {
+            port_scan_failed = 1;
+            add_event(state, database, 2, "Common TCP port scan failed or timed out");
+        }
     }
     for (size_t i = 0; i < previously_online_count; i++) {
         int still_seen = 0;
@@ -373,7 +516,8 @@ static void perform_scan(AppState *state, sqlite3 *database)
     }
     state->snapshot.last_scan = time(NULL);
     state->snapshot.scanning = 0;
-    snprintf(state->snapshot.scan_message, sizeof(state->snapshot.scan_message), "Last scan found %zu device(s)", count);
+    snprintf(state->snapshot.scan_message, sizeof(state->snapshot.scan_message),
+             port_scan_failed ? "Found %zu device(s); common-port scan failed" : "Last scan found %zu device(s)", count);
     pthread_mutex_unlock(&state->mutex);
     snprintf(message, sizeof(message), "Network scan complete: %zu device(s) found", count);
     add_event(state, database, 0, message);
@@ -443,6 +587,33 @@ void *worker_main(void *argument)
 
     pthread_mutex_lock(&state->mutex);
     db_load_devices(database, &state->snapshot);
+    for (size_t j = 0; j < state->snapshot.device_count; j++) {
+        DeviceRecord *device = &state->snapshot.devices[j];
+        size_t server_index;
+        if (!device->managed) continue;
+        for (server_index = 0; server_index < state->config.server_count; server_index++) {
+            if (strcmp(state->config.servers[server_index].address, device->ip) == 0) break;
+        }
+        if (server_index < state->config.server_count || server_index >= UPTIME_MAX_SERVERS) continue;
+        ServerConfig *server = &state->config.servers[server_index];
+        ServerStatus *server_status = &state->snapshot.servers[server_index];
+        memset(server, 0, sizeof(*server));
+        snprintf(server->name, sizeof(server->name), "%s", device->hostname[0] ? device->hostname : device->ip);
+        snprintf(server->address, sizeof(server->address), "%s", device->ip);
+        snprintf(server->user, sizeof(server->user), "%s", device->ssh_user);
+        snprintf(server->wol_mac, sizeof(server->wol_mac), "%s", device->mac);
+        server->port = device->ssh_port;
+        memset(server_status, 0, sizeof(*server_status));
+        snprintf(server_status->name, sizeof(server_status->name), "%s",
+             device->hostname[0] ? device->hostname : device->ip);
+        snprintf(server_status->address, sizeof(server_status->address), "%s", device->ip);
+        snprintf(server_status->wol_mac, sizeof(server_status->wol_mac), "%s", device->mac);
+        server_status->cpu_percent = -1.0;
+        server_status->memory_percent = -1.0;
+        server_status->disk_percent = -1.0;
+        state->config.server_count++;
+    }
+    state->snapshot.server_count = state->config.server_count;
     for (size_t i = 0; i < state->config.server_count; i++) {
         for (size_t j = 0; j < state->snapshot.device_count; j++) {
             DeviceRecord *device = &state->snapshot.devices[j];
@@ -458,6 +629,7 @@ void *worker_main(void *argument)
     db_load_events(database, &state->snapshot);
     state->snapshot.last_scan = db_load_last_scan(database);
     state->snapshot.worker_ready = 1;
+    pthread_cond_broadcast(&state->condition);
     pthread_mutex_unlock(&state->mutex);
 
     for (;;) {
@@ -473,12 +645,16 @@ void *worker_main(void *argument)
         pthread_mutex_unlock(&state->mutex);
 
         if (now >= next_monitor) {
+            size_t server_count;
             LocalStats local;
             local_stats_read(&local);
             pthread_mutex_lock(&state->mutex);
             state->snapshot.local = local;
             pthread_mutex_unlock(&state->mutex);
-            for (size_t i = 0; i < state->config.server_count; i++) check_server(state, database, i);
+            pthread_mutex_lock(&state->mutex);
+            server_count = state->config.server_count;
+            pthread_mutex_unlock(&state->mutex);
+            for (size_t i = 0; i < server_count; i++) check_server(state, database, i);
             next_monitor = now + state->config.monitor_interval;
         }
         for (size_t i = 0; i < state->config.service_count; i++) {

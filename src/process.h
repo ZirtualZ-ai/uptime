@@ -2,8 +2,10 @@
 #define UPTIME_PROCESS_H
 
 #include <stddef.h>
+#include <stdatomic.h>
 
 int process_capture(char *const arguments[], unsigned int timeout_seconds, char *output, size_t output_size);
+int process_capture_cancelable(char *const arguments[], unsigned int timeout_seconds, char *output, size_t output_size, const atomic_bool *cancelled);
 int process_tcp_probe(const char *host, int port, unsigned int timeout_ms);
 long long process_monotonic_ms(void);
 

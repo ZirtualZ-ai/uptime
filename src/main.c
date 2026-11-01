@@ -8,7 +8,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define UPTIME_VERSION "0.1.2"
+#define UPTIME_VERSION "0.2.0"
 
 int main(int argc, char **argv)
 {
@@ -62,6 +62,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "cannot allocate application state\n");
         return 1;
     }
+    atomic_init(&state->scan_cancelled, 0);
     config_defaults(&state->config);
     if (config_path == NULL) {
         if (access("./uptime.conf", R_OK) == 0) config_path = "./uptime.conf";
@@ -130,6 +131,11 @@ int main(int argc, char **argv)
             return 1;
         }
     }
+    pthread_mutex_lock(&state->mutex);
+    while (!state->snapshot.worker_ready) {
+        pthread_cond_wait(&state->condition, &state->mutex);
+    }
+    pthread_mutex_unlock(&state->mutex);
     ui_run(state);
     worker_stop(state, worker);
     sqlite3_close(state->database);

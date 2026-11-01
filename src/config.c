@@ -65,6 +65,10 @@ void config_defaults(AppConfig *config)
     copy_text(config->database, sizeof(config->database), "./uptime.db");
     config->scan_interval = 300;
     config->monitor_interval = 60;
+    config->scan_timeout = 120;
+    config->scan_max_rate = 100;
+    config->scan_max_retries = 1;
+    config->scan_profile = SCAN_PROFILE_DISCOVERY;
     config->scan_enabled = 0;
 }
 
@@ -83,6 +87,19 @@ static int set_global(AppConfig *config, const char *key, const char *value)
     } else if (strcmp(key, "monitor_interval") == 0) {
         if (parse_uint(value, 10, 3600, &parsed) != 0) return -1;
         config->monitor_interval = parsed;
+    } else if (strcmp(key, "scan_timeout") == 0) {
+        if (parse_uint(value, 10, 600, &parsed) != 0) return -1;
+        config->scan_timeout = parsed;
+    } else if (strcmp(key, "scan_max_rate") == 0) {
+        if (parse_uint(value, 1, 200, &parsed) != 0) return -1;
+        config->scan_max_rate = parsed;
+    } else if (strcmp(key, "scan_max_retries") == 0) {
+        if (parse_uint(value, 0, 3, &parsed) != 0) return -1;
+        config->scan_max_retries = parsed;
+    } else if (strcmp(key, "scan_profile") == 0) {
+        if (strcmp(value, "discovery") == 0) config->scan_profile = SCAN_PROFILE_DISCOVERY;
+        else if (strcmp(value, "standard") == 0) config->scan_profile = SCAN_PROFILE_STANDARD;
+        else return -1;
     } else if (strcmp(key, "scan_enabled") == 0) {
         if (strcmp(value, "true") == 0 || strcmp(value, "yes") == 0 || strcmp(value, "1") == 0) {
             config->scan_enabled = 1;
@@ -242,7 +259,7 @@ int config_write_example(const char *path)
 {
     FILE *file = fopen(path, "w");
     if (file == NULL) return -1;
-    fputs("[global]\nsubnet = 192.168.40.0/24\nscan_interval = 300\nmonitor_interval = 60\ndatabase = ./uptime.db\nscan_enabled = true\n\n"
+    fputs("[global]\nsubnet = 192.168.40.0/24\nscan_interval = 300\nmonitor_interval = 60\nscan_profile = discovery\nscan_timeout = 120\nscan_max_rate = 100\nscan_max_retries = 1\ndatabase = ./uptime.db\nscan_enabled = true\n\n"
           "[server b460m]\naddress = 192.168.40.10\nuser = marshal\nport = 22\n\n"
           "[service website]\nserver = b460m\ntype = https\ntarget = https://zirtualz.net/\nport = 443\nexpected_status = 200\ninterval = 60\n\n"
           "[service ollama]\nserver = b460m\ntype = tcp\ntarget = 192.168.40.10\nport = 11434\ninterval = 30\n\n"
