@@ -35,9 +35,11 @@ debug:
 	$(MAKE) CFLAGS='-O0 -g3 -std=c11 -Wall -Wextra -Wpedantic -pthread' all
 
 install: $(TARGET)
-	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(SYSCONFDIR)
+	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(SYSCONFDIR) $(DESTDIR)/var/lib/uptime
 	install -m 755 $(TARGET) $(DESTDIR)$(PREFIX)/bin/$(TARGET)
 	install -m 644 uptime.conf.example $(DESTDIR)$(SYSCONFDIR)/uptime.conf.example
+	if [ ! -e $(DESTDIR)$(SYSCONFDIR)/uptime.conf ]; then install -m 640 uptime.conf.example $(DESTDIR)$(SYSCONFDIR)/uptime.conf; fi
+	if [ -z "$(DESTDIR)" ] && [ -f /etc/alpine-release ]; then sh scripts/install-alpine-tty1.sh "$(PREFIX)" "$(SYSCONFDIR)"; fi
 
 clean:
 	rm -f $(OBJECTS) $(DEPFILES) $(TARGET)

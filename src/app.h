@@ -52,8 +52,10 @@ typedef struct {
 typedef struct {
     char name[UPTIME_NAME];
     char address[UPTIME_ADDRESS];
+    char wol_mac[32];
     int ping_ok;
     int ssh_ok;
+    unsigned int ping_failures;
     double cpu_percent;
     double memory_percent;
     double disk_percent;
@@ -62,6 +64,7 @@ typedef struct {
     char detail[UPTIME_DETAIL];
     time_t checked_at;
     time_t history_at;
+    time_t last_wol_at;
 } ServerStatus;
 
 typedef struct {

@@ -98,6 +98,7 @@ int main(int argc, char **argv)
         ServerStatus *status = &state->snapshot.servers[i];
         snprintf(status->name, sizeof(status->name), "%s", state->config.servers[i].name);
         snprintf(status->address, sizeof(status->address), "%s", state->config.servers[i].address);
+        snprintf(status->wol_mac, sizeof(status->wol_mac), "%s", state->config.servers[i].wol_mac);
         status->cpu_percent = -1.0;
         status->memory_percent = -1.0;
         status->disk_percent = -1.0;

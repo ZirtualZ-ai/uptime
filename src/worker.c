@@ -2,8 +2,11 @@
 
 #include "db.h"
 #include "process.h"
+#include "wol.h"
 
+#include <strings.h>
 #include <ctype.h>
+#include <stdint.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,6 +14,8 @@
 #include <sys/wait.h>
 
 #define SCAN_OUTPUT_SIZE 65536
+#define OFFLINE_CONFIRMATIONS 3
+#define WOL_COOLDOWN_SECONDS 300
 
 static void set_notice(AppState *state, const char *message)
 {
@@ -59,6 +64,75 @@ static void parse_remote_stats(ServerStatus *status, const char *text)
     if (temperature != NULL) sscanf(temperature + 11, "%31[^\n]", status->temperature);
 }
 
+static int host_matches(const char *candidate, const char *expected)
+{
+    size_t expected_length = strlen(expected);
+    const char *dot = strchr(candidate, '.');
+
+    if (expected_length == 0) return 0;
+    if (strcasecmp(candidate, expected) == 0) return 1;
+    return dot != NULL && (size_t)(dot - candidate) == expected_length &&
+           strncasecmp(candidate, expected, expected_length) == 0;
+}
+
+static int server_matches_device(const ServerConfig *configuration,
+                                 const ServerStatus *status,
+                                 const DeviceRecord *device)
+{
+    if (strcmp(configuration->address, device->ip) == 0 ||
+        strcmp(status->address, device->ip) == 0) return 1;
+    return device->hostname[0] != '\0' &&
+           (host_matches(device->hostname, configuration->name) ||
+            host_matches(device->hostname, configuration->address));
+}
+
+static void get_wol_broadcast(const AppConfig *configuration,
+                              const ServerConfig *server,
+                              char *output,
+                              size_t output_size)
+{
+    struct in_addr subnet_address;
+    struct in_addr broadcast_address;
+    char subnet[64];
+    char *slash;
+    unsigned long prefix;
+    uint32_t mask;
+    uint32_t network;
+
+    if (server->broadcast[0] != '\0') {
+        snprintf(output, output_size, "%s", server->broadcast);
+        return;
+    }
+    snprintf(subnet, sizeof(subnet), "%s", configuration->subnet);
+    slash = strchr(subnet, '/');
+    if (slash == NULL) goto fallback;
+    *slash++ = '\0';
+    if (inet_pton(AF_INET, subnet, &subnet_address) != 1) goto fallback;
+    prefix = strtoul(slash, NULL, 10);
+    if (prefix > 32) goto fallback;
+    mask = prefix == 0 ? 0 : UINT32_MAX << (32 - prefix);
+    network = ntohl(subnet_address.s_addr);
+    broadcast_address.s_addr = htonl((network & mask) | ~mask);
+    if (inet_ntop(AF_INET, &broadcast_address, output, output_size) != NULL) return;
+
+fallback:
+    snprintf(output, output_size, "255.255.255.255");
+}
+
+static void learn_server_identity(AppState *state, const DeviceRecord *device)
+{
+    pthread_mutex_lock(&state->mutex);
+    for (size_t i = 0; i < state->config.server_count; i++) {
+        ServerStatus *status = &state->snapshot.servers[i];
+        if (!server_matches_device(&state->config.servers[i], status, device)) continue;
+        snprintf(status->address, sizeof(status->address), "%s", device->ip);
+        if (device->mac[0] != '\0') {
+            snprintf(status->wol_mac, sizeof(status->wol_mac), "%s", device->mac);
+        }
+    }
+    pthread_mutex_unlock(&state->mutex);
+}
+
 static void check_server(AppState *state, sqlite3 *database, size_t index)
 {
     static const char remote_command[] =
@@ -77,7 +151,7 @@ static void check_server(AppState *state, sqlite3 *database, size_t index)
     char destination[UPTIME_ADDRESS + UPTIME_NAME + 8];
     char port[16];
     int ssh_result;
-    char *ping_arguments[] = { "ping", "-n", "-c", "1", "-W", "2", (char *)configuration->address, NULL };
+    char *ping_arguments[] = { "ping", "-n", "-c", "1", "-W", "2", previous.address, NULL };
     char *ssh_arguments[16];
     size_t argument = 0;
 
@@ -86,7 +160,8 @@ static void check_server(AppState *state, sqlite3 *database, size_t index)
     pthread_mutex_unlock(&state->mutex);
     current = previous;
     current.ping_ok = process_capture(ping_arguments, 4, output, sizeof(output)) == 0;
-    snprintf(destination, sizeof(destination), "%s@%s", configuration->user, configuration->address);
+    current.ping_failures = current.ping_ok ? 0 : current.ping_failures + 1;
+    snprintf(destination, sizeof(destination), "%s@%s", configuration->user, previous.address);
     snprintf(port, sizeof(port), "%d", configuration->port);
     ssh_arguments[argument++] = "ssh";
     ssh_arguments[argument++] = "-n";
@@ -106,12 +181,30 @@ static void check_server(AppState *state, sqlite3 *database, size_t index)
     if (current.ssh_ok) parse_remote_stats(&current, output);
     else snprintf(current.detail, sizeof(current.detail), "%s", current.ping_ok ? "SSH unavailable" : "host unreachable");
 
-    if ((previous.checked_at == 0 && !current.ping_ok) ||
-        (previous.checked_at != 0 && previous.ping_ok != current.ping_ok)) {
+    if ((current.ping_ok && previous.checked_at == 0) ||
+        (current.ping_ok && !previous.ping_ok && previous.ping_failures >= OFFLINE_CONFIRMATIONS) ||
+        (!current.ping_ok && current.ping_failures == OFFLINE_CONFIRMATIONS)) {
         char message[UPTIME_DETAIL];
         snprintf(message, sizeof(message), "%s is %s", configuration->name, current.ping_ok ? "reachable" : "offline");
         add_event(state, database, current.ping_ok ? 0 : 2, message);
     }
+
+    if (!current.ping_ok && current.ping_failures >= OFFLINE_CONFIRMATIONS &&
+        current.wol_mac[0] != '\0' &&
+        (current.last_wol_at == 0 || current.checked_at - current.last_wol_at >= WOL_COOLDOWN_SECONDS)) {
+        char broadcast[INET_ADDRSTRLEN];
+        char message[UPTIME_DETAIL];
+        get_wol_broadcast(&state->config, configuration, broadcast, sizeof(broadcast));
+        current.last_wol_at = current.checked_at;
+        if (wol_send(current.wol_mac, broadcast) == 0) {
+            snprintf(message, sizeof(message), "%s is offline; Wake-on-LAN packet sent", configuration->name);
+            add_event(state, database, 1, message);
+        } else {
+            snprintf(message, sizeof(message), "%s is offline; Wake-on-LAN send failed", configuration->name);
+            add_event(state, database, 2, message);
+        }
+    }
+
     if ((previous.checked_at == 0 && !current.ssh_ok) ||
         (previous.checked_at != 0 && previous.ssh_ok != current.ssh_ok)) {
         char message[UPTIME_DETAIL];
@@ -236,6 +329,7 @@ static void perform_scan(AppState *state, sqlite3 *database)
     for (line = strtok_r(output, "\n", &save); line != NULL; line = strtok_r(NULL, "\n", &save)) {
         DeviceRecord device;
         if (!parse_nmap_line(line, &device)) continue;
+        learn_server_identity(state, &device);
         int known;
         int online_before = previously_online(state, device.ip, &known);
         if (database != NULL) {
@@ -349,6 +443,18 @@ void *worker_main(void *argument)
 
     pthread_mutex_lock(&state->mutex);
     db_load_devices(database, &state->snapshot);
+    for (size_t i = 0; i < state->config.server_count; i++) {
+        for (size_t j = 0; j < state->snapshot.device_count; j++) {
+            DeviceRecord *device = &state->snapshot.devices[j];
+            if (server_matches_device(&state->config.servers[i], &state->snapshot.servers[i], device)) {
+                snprintf(state->snapshot.servers[i].address, sizeof(state->snapshot.servers[i].address), "%s", device->ip);
+                if (device->mac[0] != '\0') {
+                    snprintf(state->snapshot.servers[i].wol_mac, sizeof(state->snapshot.servers[i].wol_mac), "%s", device->mac);
+                }
+                break;
+            }
+        }
+    }
     db_load_events(database, &state->snapshot);
     state->snapshot.last_scan = db_load_last_scan(database);
     state->snapshot.worker_ready = 1;

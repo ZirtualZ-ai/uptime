@@ -449,9 +449,9 @@ static void wake_server(AppState *state, const AppSnapshot *snapshot, int screen
     } else {
         server = &state->config.servers[selected];
         broadcast = server->broadcast[0] ? server->broadcast : "255.255.255.255";
-        if (server->wol_mac[0] == '\0') {
+        if (snapshot->servers[selected].wol_mac[0] == '\0') {
             snprintf(notice, sizeof(notice), "%s has no wol_mac configured", server->name);
-        } else if (wol_send(server->wol_mac, broadcast) != 0) {
+        } else if (wol_send(snapshot->servers[selected].wol_mac, broadcast) != 0) {
             snprintf(notice, sizeof(notice), "Wake packet failed for %s", server->name);
         } else {
             snprintf(notice, sizeof(notice), "Magic packet sent to %s; current ping status: %s (boot not confirmed)",

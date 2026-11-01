@@ -11,6 +11,7 @@ Uptime is a small C11/ncurses operations console for a homelab station. It runs 
 - Device first-seen/last-seen, MAC, manufacturer (when Nmap can obtain it), online state, and scan history in SQLite.
 - TCP and HTTP/HTTPS service checks, response times, failure counts, and transition events.
 - UDP Wake-on-LAN magic packets; sending a packet is reported separately from confirming that the host booted.
+- Automatic watchdog recovery: three consecutive missed pings confirm an outage, followed by WOL retries no more than once every five minutes. A discovered target IP and MAC are retained in SQLite for later wake attempts.
 - Versioned SQLite schema, 15-minute health samples plus state transitions, and automatic retention of old telemetry.
 
 Configuration is an INI-style file. The configuration view is read-only; edit the file and restart Uptime to apply changes.
@@ -32,9 +33,11 @@ make clean
 make
 make check
 make install
-cp /etc/uptime/uptime.conf.example /etc/uptime/uptime.conf
 vi /etc/uptime/uptime.conf
+reboot
 ```
+
+On Alpine, `make install` creates `/etc/uptime/uptime.conf` from the example when no config exists, creates `/var/lib/uptime` for the database, and replaces the TTY1 `respawn` entry in `/etc/inittab` with `uptime-console`. It backs up the original file at `/etc/inittab.uptime-console.bak`; TTY1 will launch the console at boot and restart it if it exits. Review the installed config and network subnet before rebooting. Nmap, SSH client, and curl must be installed separately as listed above. Other Linux distributions receive the binary and config but no automatic TTY takeover.
 
 To rebuild with debug symbols on the Alpine machine and replace the installed executable:
 
@@ -46,7 +49,7 @@ make install
 
 The version should report `Uptime 0.1.2`. In GDB, set breakpoints on the `pthread_create` call in `main` and `worker_main` and verify the `state` pointer immediately before creation matches the worker's `argument`.
 
-Start it from TTY1 or an SSH session:
+Start it manually from a terminal when not using the Alpine TTY1 setup:
 
 ```sh
 /usr/local/bin/uptime-console -c /etc/uptime/uptime.conf
@@ -96,7 +99,7 @@ Start from [`uptime.conf.example`](uptime.conf.example). It includes the request
 subnet = 192.168.40.0/24
 scan_interval = 300
 monitor_interval = 60
-database = ./uptime.db
+database = /var/lib/uptime/uptime.db
 scan_enabled = true
 
 [server b460m]
